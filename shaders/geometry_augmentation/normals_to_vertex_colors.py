@@ -16,6 +16,8 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
+# From https://github.com/Philipp-Seifried/Blender-Normals-To-Vertex-Color
+
 bl_info = {
     "name": "Normals To Vertex Colors",
     "author": "Philipp Seifried",

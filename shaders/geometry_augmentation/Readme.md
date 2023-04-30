@@ -40,9 +40,10 @@ In practice this means that the mesh must be quad-only, which is a non-trivial c
 
 ## Sources
 - Quad phong tessellation https://liris.cnrs.fr/Documents/Liris-6161-phong_tess.pdf
--  https://www.cise.ufl.edu/research/SurfLab/papers/1008PNquad.pdf
+- PN quad https://www.cise.ufl.edu/research/SurfLab/papers/1008PNquad.pdf
 - Tessellation introduction https://nedmakesgames.medium.com/mastering-tessellation-shaders-and-their-many-uses-in-unity-9caeb760150e
 - Tessellation factor semantics, useful for quads : https://www.reedbeta.com/blog/tess-quick-ref/
 - Projection matrices https://jsantell.com/3d-projection/
 - Archived reference https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#HullShader
 - Good practices from nvidia https://developer.download.nvidia.com/whitepapers/2010/PN-AEN-Triangles-Whitepaper.pdf
+- Normals https://forum.unity.com/threads/shader-question-how-to-recalculate-normals-after-vertices-displacement.903248/
