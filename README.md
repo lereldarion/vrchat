@@ -17,7 +17,7 @@ Official docs https://docs.vrchat.com/ + link to current Unity version
 - AnimatorAsCode : animator/animation generator from a CSharp description https://github.com/hai-vr/av3-animator-as-code
 - Face tracking blendtree generator https://github.com/rrazgriz/VRCFTGenerator/blob/main/VRCFTGenerator.cs
 
-## Shader frameworks
+### Shader frameworks
 - Orels modular shader (code based) : https://shaders.orels.sh/
 - Poiyomi modular shader (Gui-based, user friendly) : https://www.poiyomi.com/
     - module examples : https://github.com/triazo/Poiyomi-Modules
