@@ -26,6 +26,7 @@ Official docs https://docs.vrchat.com/ + link to current Unity version
 ### Avatar from scratch
 - Text source with lots of details for bone naming, tool usage : https://ask.vrchat.com/t/guide-newbie-friendly-guide-for-making-a-custom-avatar-from-scratch/3633
 - Blender for vrchat avatar https://www.youtube.com/c/RainhetChaneru/videos
+- mesh import plugins https://github.com/johnzero7/XNALaraMesh
 
 ### VRChat/Unity
 - Blendtree example https://www.youtube.com/watch?v=EkVlkrQ6ypE
@@ -66,5 +67,6 @@ Raymarching
 
 Geometry shader
 - Examples https://github.com/keijiro/StandardGeometryShader/blob/master/Assets/StandardGeometry.cginc
+- Performance insights http://www.joshbarczak.com/blog/?p=667
 
 [Tessellation](shaders/geometry_augmentation/Readme.md)
