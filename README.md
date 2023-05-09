@@ -38,6 +38,8 @@ Official docs https://docs.vrchat.com/ + link to current Unity version
 - https://vrclibrary.com/wiki/
 - Silent : tools, shaders : https://github.com/s-ilent
 - HFCred (benchmarks, directblendtree) https://notes.sleightly.dev/
+- PiMaker : RiscV emulator https://blog.pimaker.at/texts/rvc1/ ; https://github.com/pimaker
+- SCRN : ML models as shaders https://github.com/scrn-vrc
 
 ### Shaders
 Shader basics
