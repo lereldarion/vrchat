@@ -32,6 +32,11 @@ Official docs https://docs.vrchat.com/ + link to current Unity version
 - Blendtree example https://www.youtube.com/watch?v=EkVlkrQ6ypE
 - Collider layers : http://vrchat.wikidot.com/worlds:layers
 - Physbones : https://www.youtube.com/watch?v=PTTnWUkswkU
+- Projectors (map only) :
+    - https://docs.unity3d.com/Manual/visual-effects-decals.html
+    - https://en.wikibooks.org/wiki/Cg_Programming/Unity/Projectors
+    - https://forum.unity.com/threads/where-to-get-the-shaders-for-projector-component.1375395/
+    - Alternate depth overlaying : https://www.ronja-tutorials.com/post/054-unlit-dynamic-decals/
 
 ### Tool devs and link dbs
 - Hai https://hai-vr.notion.site/hai-vr/Knowledge-Index-f53af3099f414e2080b1c0a7425b54e5
@@ -70,5 +75,10 @@ Raymarching
 Geometry shader
 - Examples https://github.com/keijiro/StandardGeometryShader/blob/master/Assets/StandardGeometry.cginc
 - Performance insights http://www.joshbarczak.com/blog/?p=667
+
+*Signed Distance Function* (SDF) textures for sharp bitmaps
+- Initial article by Valve https://steamcdn-a.akamaihd.net/apps/valve/2007/SIGGRAPH2007_AlphaTestedMagnification.pdf
+- Multi channel example https://www.shadertoy.com/view/NtdyWj
+- Multi channel tool and pdf doc : https://github.com/Chlumsky/msdfgen/
 
 [Tessellation](shaders/geometry_augmentation/Readme.md)
