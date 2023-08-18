@@ -22,6 +22,7 @@ Shader "Lereldarion/Overlay/Stereo"
             #pragma fragment frag
 			#pragma multi_compile_instancing
             #include "UnityCG.cginc"
+            #pragma target 5.0
 
             struct appdata
             {

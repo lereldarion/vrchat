@@ -27,6 +27,7 @@ Shader "Lereldarion/Overlay/FrameGrid"
 			#pragma multi_compile_instancing
 			
 			#include "UnityCG.cginc"
+			#pragma target 5.0
 
 			struct appdata {
 				float4 position_os : POSITION;
