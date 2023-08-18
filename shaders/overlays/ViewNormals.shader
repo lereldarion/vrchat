@@ -63,18 +63,10 @@ Shader "Lereldarion/Overlay/ViewNormals"
 				float2 screen_uv = screen_pos.xy / screen_pos.w;
 				// Read depth, linearizing into view space z depth
 				float depth_texture_value = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, screen_uv);
-				//if (depth_texture_value == 0) return 0; // Does not seem necessary
 				float linear_depth = LinearEyeDepth(depth_texture_value);
 				// Reconstruct view space of displaced pixel, but replace its w-depth by the sampled one
 				float4 position_vs = mul(unity_CameraInvProjection, position_cs);
 				return position_vs.xyz * linear_depth / position_cs.w;
-			}
-
-			float3 safe_normalize(float3 v)
-			{
-				float dp3 = dot(v, v);
-				if (dp3 == 0) return 0;
-				return v * rsqrt(dp3);
 			}
 
 			fixed4 frag (v2f i) : SV_Target
