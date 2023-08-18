@@ -69,8 +69,13 @@ Shading
 - Blender baking example for bevel and AO maps : https://www.youtube.com/watch?v=-VrYME9-_xU
 - Normal work http://www.aversionofreality.com/blog/2022/4/21/custom-normals-workflow
 
+Depth (in unity)
+- https://www.cyanilux.com/tutorials/depth/
+
 Raymarching
 - Sphere impostor https://bgolus.medium.com/rendering-a-sphere-on-a-quad-13c92025570c
+- https://jamie-wong.com/2016/07/15/ray-marching-signed-distance-functions/
+- https://www.youtube.com/@InigoQuilez/videos
 
 Geometry shader
 - Examples https://github.com/keijiro/StandardGeometryShader/blob/master/Assets/StandardGeometry.cginc
