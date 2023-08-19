@@ -1,17 +1,13 @@
 ﻿// Skeleton code for using the DX11 tessellation pipeline on triangles
-Shader "Lereldarion/TessellationSkeletonTriangle"
-{
-    Properties
-    {
+Shader "Lereldarion/TessellationSkeletonTriangle" {
+    Properties {
         _Color ("Color", Color) = (1,1,1,1)
     }
-    SubShader
-    {
+    SubShader {
         Tags { "RenderType"="Opaque" }
         LOD 100
 
-        Pass
-        {
+        Pass {
             CGPROGRAM
             #pragma target 5.0
             #pragma multi_compile_instancing

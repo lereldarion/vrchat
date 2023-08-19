@@ -51,8 +51,7 @@
 // This has similar quality, is cheaper to compute, and singularity is only a point.
 // Angular precision is inferred to reach 1 pixel at screen center.
 
-Shader "Lereldarion/Tessellation/PhongQuad"
-{
+Shader "Lereldarion/Tessellation/PhongQuad" {
     Properties {
         [Header (Standard Shader Parameters)]
         _Color ("Color", Color) = (1,1,1,1)

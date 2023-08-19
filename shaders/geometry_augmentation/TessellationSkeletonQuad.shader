@@ -1,6 +1,5 @@
 ﻿// Skeleton of using the DX11 tessellation pipeline
-Shader "Lereldarion/TesselationSkeletonQuad"
-{
+Shader "Lereldarion/TesselationSkeletonQuad" {
     Properties
     {
         _Color ("Color", Color) = (1,1,1,1)
@@ -10,8 +9,7 @@ Shader "Lereldarion/TesselationSkeletonQuad"
         Tags { "RenderType"="Opaque" }
         LOD 100
 
-        Pass
-        {
+        Pass {
             CGPROGRAM
             #pragma target 5.0
             #pragma multi_compile_instancing
