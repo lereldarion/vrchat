@@ -1,0 +1,232 @@
+%CustomEditor("ORL.ShaderInspector.InspectorGUI")
+
+%Properties()
+{
+    UI_ReplicatorGraphics("# Replicator Graphics", Int) = 1
+    // Replaces masks with constants for only what we use
+    _Replicator_MainColor("PBR albedo (override)", Color) = (1, 1, 1, 1)
+    _Replicator_Packed_Tex("R=AO, G=roughness, B=audiolink track", 2D) = "white" {}
+    [Toggle] _Replicator_AudioLink("Enable AudioLink", Float) = 1
+}
+
+%Template("/Assets/Avatar/replicator_shader/template")
+
+%Includes()
+{
+    "@/Shaders/ORL Standard",
+    "@/Modules/Audiolink",
+    "/Assets/Avatar/replicator_shader/geometry_baked_data",
+    "self"
+}
+
+%ShaderTags()
+{
+    "VRCFallback" = "ToonCutoutDoubleSided"
+}
+
+%LibraryFunctions()
+{
+    float length_squared(float3 v) { return dot(v, v); }
+    float distance_squared(float3 lhs, float3 rhs) { return length_squared(rhs - lhs); }
+
+    float3x3 rotation_matrix(float3 axis, float angle_radians) {
+        // https://en.wikipedia.org/wiki/Rotation_matrix#Rotation_matrix_from_axis_and_angle
+        float3 u = normalize(axis);
+        float C = cos(angle_radians);
+        float S = sin(angle_radians);
+        float t = 1 - C;
+        float m00 = t * u.x * u.x + C;
+        float m01 = t * u.x * u.y - S * u.z;
+        float m02 = t * u.x * u.z + S * u.y;
+        float m10 = t * u.x * u.y + S * u.z;
+        float m11 = t * u.y * u.y + C;
+        float m12 = t * u.y * u.z - S * u.x;
+        float m20 = t * u.x * u.z - S * u.y;
+        float m21 = t * u.y * u.z + S * u.x;
+        float m22 = t * u.z * u.z + C;
+        return float3x3(m00, m01, m02, m10, m11, m12, m20, m21, m22);
+    }
+}
+
+%GeometryDefinitions()
+{
+    float object_to_world_scale() {
+        return length(float3(unity_ObjectToWorld[0].x, unity_ObjectToWorld[1].x, unity_ObjectToWorld[2].x));
+    }
+    
+    uint lod_level() {
+        float3 object_origin_ws = mul(unity_ObjectToWorld, float4(0, 0, 0, 1)); // Translation components https://en.wikibooks.org/wiki/Cg_Programming/Vertex_Transformations
+        #if UNITY_SINGLE_PASS_STEREO
+        float3 camera_origin_ws = 0.5 * (unity_StereoWorldSpaceCameraPos[0] + unity_StereoWorldSpaceCameraPos[1]);
+        #else
+        float3 camera_origin_ws = _WorldSpaceCameraPos;
+        #endif
+        float camera_distance_squared = distance_squared(object_origin_ws, camera_origin_ws);
+
+        // Never animated, and 5m works well ; account for avatar scaling
+        float world_distance_lod_transition = 5 * object_to_world_scale();
+
+        return camera_distance_squared < (world_distance_lod_transition * world_distance_lod_transition) ? 0 : 1;
+    }
+
+    float4 random_float3_float(uint id) {
+        // Generate a random float4(float3 vector + float) : pick from table + add some noise
+        float4 v = baked_random_constants[id % nb_baked_random_constants];
+        // Add more variety by reusing the vector with swapped axis ; again use mod 2^n
+        UNITY_FLATTEN switch((id / nb_baked_random_constants) % 4) {
+            case 0: return v.xyzw;
+            case 1: return v.yzxw;
+            case 2: return v.zxyw;
+            case 3: return v.xzyw;
+        }
+    }
+
+    float4x4 ts_to_os_from_triangle_position_manual(VertexData input[3]) {
+        // Manually define a reference frame : xy on triangle plane, +x towards symmetric corner, origin on barycenter.
+        // Scale them by the length of the small side (assymmetric) ; should allow elongation by "sliding" on chains of blocks.
+        // Cons : we only need positions, but they must be sorted by uv to identify them.
+        float3 ts_origin_os = (input[0].vertex.xyz + input[1].vertex.xyz + input[2].vertex.xyz) / 3.;
+        // Sort positions by uv
+        float3 bottom;
+        float3 left;
+        float3 top_right;
+        UNITY_UNROLL
+        for(int i = 0; i < 3; i += 1) {
+            UNITY_FLATTEN
+            if (input[i].uv0.y > 0.8) { top_right = input[i].vertex.xyz; }
+            else if (input[i].uv0.y < 0.2) { bottom = input[i].vertex.xyz; }
+            else { left = input[i].vertex.xyz; }
+        }
+        // Build basis vectors
+        float3 ts_y_os = left - bottom;
+        float3 normalized_x = normalize(top_right - ts_origin_os);
+        float3 ts_x_os = normalized_x * length(ts_y_os);
+        float3 ts_z_os = cross(normalized_x, ts_y_os) * -unity_WorldTransformParams.w; // Handle negative scaling
+        // Matrix transformation
+        float4x4 ts_to_os = 0;
+        ts_to_os._m00_m10_m20 = ts_x_os;
+        ts_to_os._m01_m11_m21 = ts_y_os;
+        ts_to_os._m02_m12_m22 = ts_z_os;
+        ts_to_os._m03_m13_m23_m33 = float4(ts_origin_os, 1);
+        return ts_to_os;
+    }
+
+    struct DislocationAnimationConfig {
+        bool show;
+        float time;
+    };
+
+    // Audiolink rumble of blocks https://github.com/llealloo/vrc-udon-audio-link/tree/master/Docs
+    float audiolink_bass_dislocation_time(VertexData v) {
+        if (!(_Replicator_AudioLink && AudioLinkIsAvailable())) {
+            return 0;
+        }
+
+        float history_01 = v.uv1.y; // Defined on avatar and pet as 01 from core to extremities.
+        float bass_01 = AudioLinkLerp(ALPASS_AUDIOBASS + float2(history_01 * AUDIOLINK_WIDTH, 0)).r;
+
+        // Ignore low spikes using smoothed threshold 
+        float smoothed_bass_level_01 = AudioLinkData(ALPASS_FILTEREDAUDIOLINK + int2(0 /*smoothing*/, 0 /*bass*/));
+        float animation_scale = bass_01 > smoothed_bass_level_01 ? bass_01 : 0;
+
+        float max_animation_time = 0.01;
+        return bass_01 * max_animation_time;
+    }
+
+    // random_vec used as float4(xyz = translation speed (m/s WS) + rotation axis (TS), w = rotation speed in rad/s)
+    void animate_ts_to_os(inout float4x4 ts_to_os, float4 random_vec, float time) {
+        // Rotate triangle space (as values are centered on 0, and rotation operates with an axis on 0 too).
+        // This does not touch translation nor w scale;
+        float3x3 new_ts_to_os_rot = mul((float3x3) ts_to_os, rotation_matrix(random_vec.xyz, time * random_vec.w));
+        for(int i = 0; i < 3; i += 1) {
+            ts_to_os[i].xyz = new_ts_to_os_rot[i];
+        }
+        // Fall translation
+        float3 gravity = float3(0, -7, 0); // Unity up = +Y ; reduced for slower animation.
+        float3 initial_velocity = random_vec.xyz * object_to_world_scale();
+        float3 translation_ws = initial_velocity * time + 0.5 * gravity * time * time;
+        ts_to_os._m03_m13_m23 += mul((float3x3) unity_WorldToObject, translation_ws);
+    }
+
+    // Must be provided by final shader :
+    // VertexData true_Vertex(VertexData v);
+    // DislocationAnimationConfig dislocation_animation_config(VertexData v);
+}
+
+%Geometry()
+{
+    [instance(nb_geometry_instances)]
+    [maxvertexcount(nb_vertices_per_geometry_instance)]
+    void Geometry (triangle VertexData input[3], uint block_id : SV_PrimitiveID, uint instance_id : SV_GSInstanceID, inout TriangleStream<FragmentData> stream) {
+        UNITY_SETUP_INSTANCE_ID(input[0]);
+
+        DislocationAnimationConfig config = dislocation_animation_config(input[0]);
+        if (!config.show) { return; }
+
+        config.time += audiolink_bass_dislocation_time(input[0]);
+
+        float4x4 ts_to_os = ts_to_os_from_triangle_position_manual(input);
+        animate_ts_to_os(ts_to_os, random_float3_float(block_id), config.time);
+
+        uint lod_offset = lod_level() * nb_geometry_instances;
+        uint start = geometry_instance_boundaries[instance_id + lod_offset];
+        uint end = geometry_instance_boundaries[instance_id + lod_offset + 1];
+
+        for (uint i = start; i < end; i += 1) {
+            BakedVertexData baked = geometry_baked_vertex_data[i];
+            if (baked.strip_restart) {
+                stream.RestartStrip();
+            }
+            // Extract baked data to object space VertexData, leave the rest untouched.
+            VertexData v = input[0];
+            v.vertex = mul(ts_to_os, float4(baked.position_ts, 1));
+            v.normal = normalize(mul((float3x3) ts_to_os, baked.normal_ts));
+            v.tangent.xyz = mul((float3x3) ts_to_os, baked.tangent_ts); // Renormalized afterwards
+            v.uv0 = baked.uv0;
+            // Use real Vertex stage from orels
+            stream.Append(Vertex(v));
+        }
+    }
+}
+
+%Variables()
+{
+    half4 _Replicator_MainColor;
+    bool _Replicator_AudioLink;
+}
+
+%Textures()
+{
+    TEXTURE2D(_Replicator_Packed_Tex);
+    SAMPLER(sampler_Replicator_Packed_Tex);
+}
+
+%Fragment("ReplicatorPbrFragment")
+{
+    void ReplicatorPbrFragment(MeshData d, inout SurfaceData o) {
+        // This overrides the _MainTex, so it can be used solely for fallback rendering
+        o.Albedo = _Replicator_MainColor.rgb;
+
+        // Use custom packed texture with only non constant values. Having true constants helps the compiler.
+        half4 packed = SAMPLE_TEXTURE2D(_Replicator_Packed_Tex, sampler_Replicator_Packed_Tex, d.uv0.xy);
+        half ao = packed.r;
+        half roughness = packed.g * 0.7; // Looks more shiny like that
+        half audiolink_track = packed.b;
+
+        o.Metallic = 1.;
+        o.Smoothness = 1. - roughness;
+        o.Occlusion = ao;
+        o.Alpha = 1.;
+
+        if (_Replicator_AudioLink && AudioLinkIsAvailable()) {
+            float history_01 = d.uv1.y;
+            float3 color = AudioLinkData(ALPASS_THEME_COLOR0).rgb;
+            float level_01 = AudioLinkLerp(ALPASS_AUDIOHIGHMIDS + float2(history_01 * AUDIOLINK_WIDTH, 0)).r;
+            float smoothed_level_01 = AudioLinkData(ALPASS_FILTEREDAUDIOLINK + int2(0 /*smoothing*/, 2 /*highmids*/)).r;
+            float threshold_01 = (level_01 - smoothed_level_01) / (1.02 - smoothed_level_01); // Remaps above average part of signal to [0,1]
+            if (threshold_01 > audiolink_track) {
+                o.Emission += color;
+            }
+        }
+    }
+}

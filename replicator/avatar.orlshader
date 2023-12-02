@@ -1,0 +1,50 @@
+%ShaderName("Lereldarion/Replicator/Avatar")
+
+%Properties()
+{
+    UI_ReplicatorDislocation("# Replicator Avatar", Int) = 1
+    // Animation stuff
+    _Replicator_Dislocation_Global("Dislocation Global (show, time, spatial_delay_factor, _)", Vector) = (1, 0, 0, 0)
+    _Replicator_Dislocation_LeftArm("Dislocation LeftArm (show_upper_bound, animation_lower_bound, time, _)", Vector) = (1, 1, 0, 0)
+    _Replicator_Dislocation_RightArm("Dislocation RightArm (show_upper_bound, animation_lower_bound, time, _)", Vector) = (1, 1, 0, 0)
+}
+
+%Includes()
+{
+    "replicator_pbr",
+    "self",
+}
+
+%Variables()
+{
+    float4 _Replicator_Dislocation_Global;
+    float4 _Replicator_Dislocation_LeftArm;
+    float4 _Replicator_Dislocation_RightArm;
+}
+
+%GeometryDefinitions()
+{
+    // Not needed, everything is done in the geometry stage
+    VertexData true_Vertex(VertexData v) { return v; }
+
+    DislocationAnimationConfig dislocation_animation_config(VertexData v) {
+        // Unpack mesh config
+        float global_spatial_delay = v.uv1.x;
+        float limb_id = v.uv2.x;
+        float limb_metric = v.uv2.y;
+
+        // Apply global animation first ; always overrides stuff
+        DislocationAnimationConfig config;
+        config.show = bool(_Replicator_Dislocation_Global.x);
+        config.time = max(0., _Replicator_Dislocation_Global.y - global_spatial_delay * _Replicator_Dislocation_Global.z);
+
+        // Arm (show_upper_bound, animation_lower_bound, time, _)
+        float3 arm_config = float3(10, 10, 0);
+        if (limb_id == 2) { arm_config = _Replicator_Dislocation_LeftArm.xyz; }
+        if (limb_id == 3) { arm_config = _Replicator_Dislocation_RightArm.xyz; }
+        config.show = config.show && limb_metric <= arm_config.x;
+        float arm_time = limb_metric >= arm_config.y ? arm_config.z : 0;
+        config.time = max(config.time, arm_time);
+        return config;
+    }
+}

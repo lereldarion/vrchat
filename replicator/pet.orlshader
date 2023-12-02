@@ -1,0 +1,92 @@
+%ShaderName("Lereldarion/Replicator/Pet")
+
+%Properties()
+{
+    UI_ReplicatorPet("# Replicator Pet Animations", Int) = 1
+    _Replicator_WalkSpeedFactor("Walking speed multiplier", float) = 1
+    _Replicator_Cower("Cower", Range(0, 1)) = 0
+    _Replicator_Dislocation_Time("Dislocation time", float) = 0
+}
+
+%Includes()
+{
+    "../replicator_shader/replicator_pbr",
+    "pet_data",
+    "self"
+}
+
+%Variables()
+{
+    float _Replicator_Dislocation_Time;
+}
+
+%GeometryDefinitions()
+{
+    // Instancing to let pets be independent.
+    // https://forum.unity.com/threads/problem-of-accessing-material-property-which-is-modified-by-animation.673252/ suggests animation use MaterialPropertyBlock which should work.
+    UNITY_INSTANCING_BUFFER_START(Props)
+        UNITY_DEFINE_INSTANCED_PROP(float, _Replicator_WalkSpeedFactor)
+        UNITY_DEFINE_INSTANCED_PROP(float, _Replicator_Cower)
+    UNITY_INSTANCING_BUFFER_END(Props)
+
+    struct WalkingAnimationConfig {
+        int sample_index;
+        float lerp_with_next;
+    };
+
+    WalkingAnimationConfig walking_animation_config() {
+        float secs_from_level_start = _Time.y * UNITY_ACCESS_INSTANCED_PROP(Props, _Replicator_WalkSpeedFactor);
+
+        float animation_cycle = walking_animation_sample_count * walking_animation_sample_interval;
+
+        #if defined(UNITY_INSTANCING_ENABLED)
+        // Add some desync between pets
+        secs_from_level_start += 0.2 * animation_cycle * unity_InstanceID;
+        #endif
+
+        float animation_time_01 = frac(secs_from_level_start / animation_cycle);
+        float continuous_sample_index = walking_animation_sample_count * animation_time_01;
+
+        WalkingAnimationConfig config;
+        config.sample_index = (int) trunc(continuous_sample_index);
+        config.lerp_with_next = frac(continuous_sample_index);
+        return config;
+    }
+
+    float3 apply_rotation(float3 position, int rotation_id, WalkingAnimationConfig animation) {
+        RotationConfigOs rotation = rotation_config_os[rotation_id];
+        float angle = lerp(
+            walking_animation_samples[animation.sample_index][rotation_id],
+            walking_animation_samples[animation.sample_index + 1][rotation_id], // first sample duplicated at end to allow +1 without modulo
+            animation.lerp_with_next
+        );
+
+        float cower = UNITY_ACCESS_INSTANCED_PROP(Props, _Replicator_Cower);
+        angle = lerp(angle, cower_rotation_offsets[rotation_id], cower);
+        
+        return rotation.center + mul(rotation_matrix(rotation.axis, angle), position - rotation.center);
+    }
+
+    float3 apply_skinning(float3 pos, int bone_id) {
+        WalkingAnimationConfig config = walking_animation_config();
+        int4 rotation_sequence = bone_id_rotation_sequence[bone_id];
+        pos = apply_rotation(pos, rotation_sequence[0], config);
+        pos = apply_rotation(pos, rotation_sequence[1], config);
+        pos = apply_rotation(pos, rotation_sequence[2], config);
+        pos = apply_rotation(pos, rotation_sequence[3], config);
+        return pos;
+    }
+
+    VertexData true_Vertex(VertexData v) {
+        UNITY_SETUP_INSTANCE_ID(v);
+        v.vertex.xyz = apply_skinning(v.vertex.xyz, (int) v.uv1.x);
+        return v;
+    }
+
+    DislocationAnimationConfig dislocation_animation_config(VertexData v) {
+        DislocationAnimationConfig config;
+        config.show = true;
+        config.time = _Replicator_Dislocation_Time;
+        return config;
+    }
+}
