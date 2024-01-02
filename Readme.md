@@ -52,6 +52,8 @@ Shader basics
 - Transforms again https://en.wikibooks.org/wiki/Cg_Programming/Vertex_Transformations
 - Normal transforms : https://forum.unity.com/threads/difference-between-unityobjecttoworlddir-and-unityobjecttoworldnormal.435302/
 - Shader tips : https://github.com/cnlohr/shadertrixx
+- Nvidia GPU gems **books** : https://developer.nvidia.com/gpugems/gpugems/
+- Catlike coding tutorials : https://catlikecoding.com/unity/tutorials/
 
 Unity shader fondamentals and integration
 - https://docs.unity3d.com/Manual/SL-VertexFragmentShaderExamples.html
@@ -61,6 +63,7 @@ Unity shader fondamentals and integration
 
 Examples
 - https://github.com/netri/Neitri-Unity-Shaders#types
+- Ocean : https://www.youtube.com/watch?v=yPfagLeUa7k
 
 Shadowcasters
 - https://forum.unity.com/threads/custom-shadow-caster-and-collector-pass.1141900/
