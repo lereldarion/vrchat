@@ -13,9 +13,15 @@ Official docs https://docs.vrchat.com/ + link to current Unity version
 - VRLabs prefabs https://github.com/VRLabs
 
 ### Tools
-- Avatar optimizer https://github.com/d4rkc0d3r/d4rkAvatarOptimizer
+Avatar
+- Avatar optimizer (low configuration needed) https://github.com/d4rkc0d3r/d4rkAvatarOptimizer
 - AnimatorAsCode : animator/animation generator from a CSharp description https://github.com/hai-vr/av3-animator-as-code
 - Face tracking blendtree generator https://github.com/rrazgriz/VRCFTGenerator/blob/main/VRCFTGenerator.cs
+- Guided merge of prefabs : https://modular-avatar.nadena.dev/ https://github.com/bdunderscore/modular-avatar
+- Tools to trim polygons in unity (NDMF compatible) : https://github.com/anatawa12/AvatarOptimizer https://vpm.anatawa12.com/avatar-optimizer/en/ 
+
+Texturing
+- generate PBR from photos http://www.boundingboxsoftware.com/materialize/index.php
 
 ### Shader frameworks
 - Orels modular shader (code based) : https://shaders.orels.sh/
@@ -37,6 +43,8 @@ Official docs https://docs.vrchat.com/ + link to current Unity version
     - https://en.wikibooks.org/wiki/Cg_Programming/Unity/Projectors
     - https://forum.unity.com/threads/where-to-get-the-shaders-for-projector-component.1375395/
     - Alternate depth overlaying : https://www.ronja-tutorials.com/post/054-unlit-dynamic-decals/
+- World lighting setup https://gitlab.com/s-ilent/SCSS/-/wikis/home
+- Colliders in worlds https://www.polygonalmind.com/blog/optimizing-vrchat-worlds-collision-debugging
 
 ### Tool devs and link dbs
 - Hai https://hai-vr.notion.site/hai-vr/Knowledge-Index-f53af3099f414e2080b1c0a7425b54e5
@@ -65,12 +73,17 @@ Examples
 - https://github.com/netri/Neitri-Unity-Shaders#types
 - Ocean : https://www.youtube.com/watch?v=yPfagLeUa7k
 
+VRChat specific
+- Audiolink : https://github.com/llealloo/vrc-udon-audio-link/tree/master/Docs
+- LTCGI from pimaker : https://ltcgi.dev/ https://github.com/PiMaker/ltcgi/
+
 Shadowcasters
 - https://forum.unity.com/threads/custom-shadow-caster-and-collector-pass.1141900/
 
-Shading
+Shading/Lighting
 - Blender baking example for bevel and AO maps : https://www.youtube.com/watch?v=-VrYME9-_xU
 - Normal work http://www.aversionofreality.com/blog/2022/4/21/custom-normals-workflow
+- Parallax mapping for faking geometry : https://learnopengl.com/Advanced-Lighting/Parallax-Mapping https://mrrolord.gumroad.com/l/BlenderPOM 
 
 Depth (in unity)
 - https://www.cyanilux.com/tutorials/depth/
