@@ -1,13 +1,12 @@
 ﻿#if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using AnimatorAsCode.V0;
 using UnityEditor;
 using UnityEditor.Animations;
-using UnityEditorInternal.VersionControl;
 using UnityEngine;
 using UnityEngine.Animations;
-using UnityEngine.Rendering.PostProcessing;
 using VRC.Dynamics;
 using VRC.SDK3.Avatars.Components;
 using VRC.SDK3.Dynamics.Contact.Components;
@@ -28,15 +27,15 @@ namespace Lereldarion {
         public ContactReceiver left_lower_arm_contact;
         public ContactReceiver right_lower_arm_contact;
         public Transform pet_system_container;
+        public Transform chair_system;
 
         [Header("Visor")]
         public Transform visor_bone;
         public Transform stable_sized_head;
         public Material[] overlays;
 
-        [Header("True Mesh Demo")]
-        public Material body_default;
-        public Material body_true_wireframe;
+        [Header("Material swaps")]
+        public Material[] body;
     }
 
     [CustomEditor(typeof(ReplicatorAvatarAnimator), true)]
@@ -50,10 +49,11 @@ namespace Lereldarion {
             CreateAnimatorShield(editor, aac, aac.CreateSupportingFxLayer("Shield"));
             CreateAnimatorDislocation(editor, aac, aac.CreateSupportingFxLayer("Dislocation"), dbt);
             CreateAnimatorFace(editor, dbt);
-            CreateAnimatorDemo(editor, dbt);
+            CreateAnimatorMaterialSwaps(editor, dbt);
             CreateAnimatorVisor(editor, aac, aac.CreateSupportingFxLayer("Visor"));
             CreateAnimatorPetSystems(editor, aac, dbt);
             CreateAnimatorAudioLink(editor, dbt);
+            CreateAnimatorChair(editor, dbt);
         }
 
         private void Remove() {
@@ -163,6 +163,7 @@ namespace Lereldarion {
 
             var constraint = editor.shield_bone.GetComponent<RotationConstraint>();
             string blendshape = "Deploy_Shield";
+            var collider = editor.shield_bone.GetComponent<BoxCollider>();
             
             // transitions times
             float block_dt = 0.7f;
@@ -174,6 +175,7 @@ namespace Lereldarion {
                     clip.Animates(editor.main_mesh, $"blendShape.{blendshape}").WithOneFrame(0);
                     clip.Animates(editor.main_mesh, $"{shield_material}._Falloff_Radius").WithOneFrame(0);
                     clip.Animates(editor.left_lower_arm_contact, "m_Enabled").WithOneFrame(1); 
+                    clip.Animates(collider, "m_Enabled").WithOneFrame(0);
                 }));
             
             var deployed = layer.NewState("Deployed").Shift(retracted, 2, 0)
@@ -182,6 +184,7 @@ namespace Lereldarion {
                     clip.Animates(editor.main_mesh, $"blendShape.{blendshape}").WithOneFrame(100);
                     clip.Animates(editor.main_mesh, $"{shield_material}._Falloff_Radius").WithOneFrame(0.5f);
                     clip.Animates(editor.left_lower_arm_contact, "m_Enabled").WithOneFrame(0); // "Protect" (disable) contact when shield deployed
+                    clip.Animates(collider, "m_Enabled").WithOneFrame(1);
                 }));
 
             var deploying = layer.NewState("Deploying").Shift(retracted, 1, 1)
@@ -201,6 +204,7 @@ namespace Lereldarion {
                     AnimateConstraintSources(clip, constraint, (curve, i) => curve.WithSecondsUnit(keys => keys.Linear(0f, i == 1).Easing(shield_dt, i == 1).Easing(shield_dt + block_dt, i == 0)));
                     clip.Animates(editor.main_mesh, $"blendShape.{blendshape}").WithSecondsUnit(keys => keys.Linear(0f, 100f).Easing(shield_dt, 100f).Easing(shield_dt + block_dt, 0f));
                     clip.Animates(editor.main_mesh, $"{shield_material}._Falloff_Radius").WithSecondsUnit(keys => keys.Easing(0f, 0.5f).Easing(shield_dt, 0f));
+                    clip.Animates(collider, "m_Enabled").WithOneFrame(0);
                 }));
             deployed.TransitionsTo(retracting)
                 .When(synced.IsFalse())
@@ -258,7 +262,7 @@ namespace Lereldarion {
                 lower_cut_remap.AutomaticallyMovesTo(standby);
 
                 cut_animation.WithAnimation(
-                    DirectBlendTree.Create1D(aac, current_cut_offset, -1f, 1f, (clip, value) => {
+                    DirectBlendTree.Create1D(aac, current_cut_offset, new[] {-1f, 1f}, (clip, value) => {
                         clip.Animating(edit_clip => {
                             // Set animation cutoff from current cut with blendtree.
                             edit_clip.Animates(editor.main_mesh, $"{block_material}._Replicator_Dislocation_{name}.y").WithOneFrame(value);
@@ -283,7 +287,7 @@ namespace Lereldarion {
                 standby.Drives(current_cut_offset, 1f); // Resets so that hand object logic can use it for immediate detection. Drives NOT locally.
 
                 // Track synced show_cutoff value to follow radial puppet.
-                dbt.Add1D(synced_cut_offset, -1f, 1f, (clip, value) => {
+                dbt.Add1D(synced_cut_offset, new[] {-1f, 1f}, (clip, value) => {
                     clip.Animating(edit => edit.Animates(editor.main_mesh, $"{block_material}._Replicator_Dislocation_{name}.x").WithOneFrame(value));
                 });
             }
@@ -340,33 +344,45 @@ namespace Lereldarion {
         //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
         private void CreateAnimatorFace(ReplicatorAvatarAnimator editor, DirectBlendTree dbt) {
-            // Eyes are blendshapes changing the eye expression, driven from toggle
-            var param_and_blendshape_names = new Dictionary<String, String>{
-                {"Eye/Smiling", "Eye_Smiling"},
-                {"Eye/Closed", "Eye_Closed"},
-                {"Eye/Star", "Eye_Star"},
+            // Eyes are blendshapes changing the eye expression, driven from int : 0 = none, 1 = smiling, etc
+            var face_blendshapes = new[] {
+                "Eye_Smiling",
+                "Eye_Closed",
+                "Eye_Star",
             };
-            foreach (var param_and_blendshape in param_and_blendshape_names) {
-                dbt.Add1D(dbt.Layer.FloatParameter(param_and_blendshape.Key), 0f, 1f, (clip, value) => {
-                    // Blendshape are between 0-100
-                    clip.BlendShape(editor.main_mesh, param_and_blendshape.Value, value * 100f);
-                });
-            }
+            dbt.Add1D(
+                dbt.Layer.FloatParameter("Face"),
+                Enumerable.Range(0, face_blendshapes.Length + 1).Select(i => (float) i).ToArray(),
+                (clip, active_index) => {
+                    foreach (var (blendshape_name, index) in face_blendshapes.Select((bn, i) => (bn, i + 1))) {
+                        // Blendshape are between 0-100
+                        clip.BlendShape(editor.main_mesh, blendshape_name, (int) active_index == index ? 100f : 0f);
+                    }
+                }
+            );
 
             // Animate mouth emission from voice builtin parameter.
-            dbt.Add1D(dbt.Layer.Av3().Voice, 0f, 1f, (clip, value) => {
+            dbt.Add1D(dbt.Layer.Av3().Voice, new[] {0f, 1f}, (clip, value) => {
                 clip.Animating(edit => edit.Animates(editor.main_mesh, $"{shield_material}._MouthEmissionMultiplier").WithOneFrame(value));
             });
         }
 
-        private void CreateAnimatorDemo(ReplicatorAvatarAnimator editor, DirectBlendTree dbt) {
-            dbt.Add1D(dbt.Layer.FloatParameter("TrueMeshDemo"), 0f, 1f, (clip, value) => {
-                clip.SwappingMaterial(editor.main_mesh, 0, value > 0.5f ? editor.body_true_wireframe : editor.body_default);
-            });
+        private void CreateAnimatorMaterialSwaps(ReplicatorAvatarAnimator editor, DirectBlendTree dbt) {
+            int n = editor.body.Length;
+            Debug.Assert(n >= 2);
+            float factor_01 = editor.body.Length - 1;
+
+            dbt.Add1D(
+                dbt.Layer.FloatParameter("Material"),
+                Enumerable.Range(0, n).Select(i => i / factor_01).ToArray(),
+                (clip, material_id_01) => {
+                    clip.SwappingMaterial(editor.main_mesh, 0, editor.body[(int) Math.Round(material_id_01 * factor_01)]);
+                }
+            );
         }
 
         private void CreateAnimatorAudioLink(ReplicatorAvatarAnimator editor, DirectBlendTree dbt) {
-            dbt.Add1D(dbt.Layer.FloatParameter("AudioLink"), 0f, 1f, (clip, value) => {
+            dbt.Add1D(dbt.Layer.FloatParameter("AudioLink"), new[] {0f, 1f}, (clip, value) => {
                 clip.Animating(edit => {
                     edit.Animates(editor.main_mesh, $"{block_material}._Replicator_AudioLink").WithOneFrame(value);
                     foreach(MeshRenderer pet_renderer in editor.pet_system_container.GetComponentsInChildren<MeshRenderer>(true)) {
@@ -506,7 +522,7 @@ namespace Lereldarion {
             }
 
             // Compensate avatar scaling on world offset (https://justsleightly.notion.site/Designing-Scale-Friendly-Systems-a5c9a9f9d4f24e60ab0503aeb2891b77)
-            dbt.Add1D(dbt.Layer.FloatParameter("ScaleFactorInverse"), 0.01f, 100f, (clip, value) => {
+            dbt.Add1D(dbt.Layer.FloatParameter("ScaleFactorInverse"), new[] {0.01f, 100f}, (clip, value) => {
                 clip.Scaling(new[]{editor.pet_system_container.gameObject}, Vector3.one * value);
             });
         }
@@ -572,7 +588,7 @@ namespace Lereldarion {
 
                 var set_scale = layer.NewState($"Set Scale {mode}").Under(debounce).WithAnimation(
                     // Set to current scale at launch ; left constant during run.
-                    DirectBlendTree.Create1D(aac, layer.FloatParameter("ScaleFactor"), 0.01f, 100f, (clip, value) => {
+                    DirectBlendTree.Create1D(aac, layer.FloatParameter("ScaleFactor"), new[] {0.01f, 100f}, (clip, value) => {
                         clip.Scaling(new[]{system.gameObject}, Vector3.one * value);
                     })
                 );
@@ -612,6 +628,26 @@ namespace Lereldarion {
             }
 
             slot_active_flag_names.Add(slot_active_flag.Name);
+        }
+
+        //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+        private void CreateAnimatorChair(ReplicatorAvatarAnimator editor, DirectBlendTree dbt) {
+            var collider = editor.chair_system.GetComponent<BoxCollider>();
+            var position = editor.chair_system.Find("Position");
+
+            dbt.Add1D(
+                dbt.Layer.FloatParameter("ChairSystem"),
+                new[] {0f, 0.01f, 1f},
+                (clip, distance) => {
+                    clip.TogglingComponent(collider, distance >= 0.01f);
+                    clip.Animating(clip => {
+                        AnimateTransformVec3(clip, position, "m_LocalPosition", (curve, i) => {
+                            curve.WithOneFrame(i == 1 ? distance * 50f : 0f); // y
+                        });
+                    });
+                }
+            );
         }
 
         //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -681,8 +717,7 @@ namespace Lereldarion {
         /// <param name="assetKey">Animation assets will be generated with this name in order to clean up previously generated assets of the same system</param>
         /// <param name="options">Some options, such as whether Write Defaults is ON or OFF</param>
         /// <returns>The AAC base.</returns>
-        private AacFlBase AnimatorAsCode(ReplicatorAvatarAnimator editor)
-        {
+        private AacFlBase AnimatorAsCode(ReplicatorAvatarAnimator editor) {
             var aac = AacV0.Create(new AacConfiguration {
                 SystemName = "A",
                 // In the examples, we consider the avatar to be also the animator root.
@@ -737,26 +772,32 @@ namespace Lereldarion {
         }
 
         // Create a blend tree with two animations min/max blended with parameter.
-        static public BlendTree Create1D(AacFlBase aac, AacFlFloatParameter parameter, float min, float max, Action<AacFlClip, float> setup_clip) {
+        static public BlendTree Create1D(AacFlBase aac, AacFlFloatParameter parameter, float[] blend_values, Action<AacFlClip, float> setup_clip) {
+            Debug.Assert(blend_values.Length >= 2);
+            Array.Sort(blend_values);
+            float min = blend_values.Min();
+            float max = blend_values.Max();
             Debug.Assert(min < max);
+
             var tree = aac.NewBlendTreeAsRaw();
             tree.blendType = BlendTreeType.Simple1D;
             tree.blendParameter = parameter.Name;
             tree.minThreshold = min;
             tree.maxThreshold = max;
             tree.useAutomaticThresholds = false;
-            ChildMotion make_clip(string threshold_name, float threshold) {
-                var clip = aac.NewClip($"{parameter.Name.Replace('/', '_')}_{threshold_name}");
-                setup_clip.Invoke(clip, threshold);
-                return new ChildMotion{motion = clip.Clip, timeScale = 1, threshold = threshold};
+
+            ChildMotion make_clip(float blend_value, int i) {
+                var clip = aac.NewClip($"{parameter.Name.Replace('/', '_')}_{i}");
+                setup_clip.Invoke(clip, blend_value);
+                return new ChildMotion{motion = clip.Clip, timeScale = 1, threshold = blend_value};
             }
-            tree.children = new[] { make_clip("min", min), make_clip("max", max) };
+            tree.children = blend_values.Select((blend, index) => make_clip(blend, index)).ToArray();
             return tree;
         }
 
         // Create 1d blendtree and add to dbt layer
-        public void Add1D(AacFlFloatParameter parameter, float min, float max, Action<AacFlClip, float> setup_clip) {
-            Add(Create1D(_aac, parameter, min, max, setup_clip));
+        public void Add1D(AacFlFloatParameter parameter, float[] blend_values, Action<AacFlClip, float> setup_clip) {
+            Add(Create1D(_aac, parameter, blend_values, setup_clip));
         }
     }
 }
