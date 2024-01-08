@@ -49,10 +49,12 @@ Texturing
 ### Tool devs and link dbs
 - Hai https://hai-vr.notion.site/hai-vr/Knowledge-Index-f53af3099f414e2080b1c0a7425b54e5
 - https://vrclibrary.com/wiki/
+- awesome vrchat (large link db) : https://github.com/madjin/awesome-vrchat
 - Silent : tools, shaders : https://github.com/s-ilent
 - HFCred (benchmarks, directblendtree) https://notes.sleightly.dev/
 - PiMaker : RiscV emulator https://blog.pimaker.at/texts/rvc1/ ; https://github.com/pimaker
 - SCRN : ML models as shaders https://github.com/scrn-vrc
+- pema99 shader tricks : https://github.com/pema99/shader-knowledge (very interesting part on instancing !)
 
 ### Shaders
 Shader basics
@@ -76,6 +78,7 @@ Examples
 VRChat specific
 - Audiolink : https://github.com/llealloo/vrc-udon-audio-link/tree/master/Docs
 - LTCGI from pimaker : https://ltcgi.dev/ https://github.com/PiMaker/ltcgi/
+- ProTV api : https://protv.dev/api/shaders-avatars 
 
 Shadowcasters
 - https://forum.unity.com/threads/custom-shadow-caster-and-collector-pass.1141900/
@@ -101,5 +104,6 @@ Geometry shader
 - Initial article by Valve https://steamcdn-a.akamaihd.net/apps/valve/2007/SIGGRAPH2007_AlphaTestedMagnification.pdf
 - Multi channel example https://www.shadertoy.com/view/NtdyWj
 - Multi channel tool and pdf doc : https://github.com/Chlumsky/msdfgen/
+- Vrc/unity integration : https://github.com/MerlinVR/Unity-MSDF-Fonts
 
 [Tessellation](shaders/geometry_augmentation/Readme.md)
