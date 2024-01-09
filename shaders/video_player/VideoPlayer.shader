@@ -45,15 +45,19 @@ Shader "Lereldarion/VideoPlayer" {
 
             //uniform float4 _Margins;
             static const float4 _Margins = float4(0.1, 0.08, 0.14, 0.15);
-            sampler2D _DisabledIcon;
+            UNITY_DECLARE_TEX2D(_DisabledIcon);
 
-            // ProTV defs
-            sampler2D _Udon_VideoTex;
-            uniform float4 _Udon_VideoTex_TexelSize;
+            // ProTV defs ; they use explicit Texture2D to reload size
+            Texture2D _Udon_VideoTex;
+            SamplerState sampler_Udon_VideoTex;
+            uniform float4 _Udon_VideoTex_ST;
             uniform float4x4 _Udon_VideoData;
 
             bool is_video_available() {
-                return _Udon_VideoTex_TexelSize.z > 16;
+                int w;
+                int h;
+                _Udon_VideoTex.GetDimensions(w, h);
+                return w > 16;
             }
 
             fixed4 frag (v2f input) : SV_Target {
@@ -64,15 +68,15 @@ Shader "Lereldarion/VideoPlayer" {
 
                 if (!is_video_available()) {
                     uv = saturate ((uv - 0.5) * 2 + 0.5); // Center the texture, pad with white sides
-                    return tex2D(_DisabledIcon, uv);
+                    return UNITY_SAMPLE_TEX2D(_DisabledIcon, uv);
                 }
 
                 bool2 within_rectangle = abs(uv - 0.5) < 0.5;
 
                 if (all(within_rectangle)) {
-                    // Screen
-                    // No post processing, especially no handling of 3d modes.
-                    return tex2D(_Udon_VideoTex, uv);
+                    // Screen : no post processing, no handling of 3d modes, no fix of aspect ratio.
+                    uv = uv * _Udon_VideoTex_ST.xy + _Udon_VideoTex_ST.zw;
+                    return _Udon_VideoTex.Sample(sampler_Udon_VideoTex, uv);
                 } else if (uv.x < 0 && within_rectangle.y) {
                     // Left volume bar
                     float volume = _Udon_VideoData._21;
