@@ -80,8 +80,10 @@ SubShader {
         static const half4 NC0 = half4(0, 157, 113, 270);
         static const half4 NC1 = half4(1, 158, 114, 271);
 
+        // [0-1]
         half4 hash4 (half4 n) { return frac(sin(n) * 1399763.5453123); }
 
+        // [0-1]
         half noise2 (half2 x) {
             half2 p = floor(x);
             half2 f = frac(x);
@@ -91,7 +93,7 @@ SubShader {
             half2 s1 = lerp(h.xy, h.zw, f.xx);
             return lerp(s1.x, s1.y, f.y);
         }
-
+        // [0-1], more details
         half noise222 (half2 x, half2 y, half2 z) {
             half4 lx = x.xyxy * y.xxyy;
             half4 p = floor(lx);
@@ -101,7 +103,20 @@ SubShader {
             half4 h = lerp(hash4(n.xxyy + NC0.xyxy), hash4(n.xxyy + NC1.xyxy), f.xxzz);
             return dot(lerp(h.xz, h.yw, f.yw), z);
         }
+        // [-0.5, 0.5]
+        half noise2_lod (half2 rad, half resolution) {
+            half r;
+            if (resolution < 0.0015) {
+                r = noise222(rad, half2(20.6,100.6), half2(0.9,0.1));
+            } else if (resolution < 0.005) {
+                r = noise2(rad * 20.6);
+            } else {
+                r = noise2(rad * 10.3); // visually different from above ; remove ?
+            }
+            return r - 0.5;
+        }
 
+        // [0-1]
         half noise3 (half3 x) {
             half3 p = floor(x);
             half3 f = frac(x);
@@ -113,94 +128,100 @@ SubShader {
 
         // Raymarching
 
-        half lod_noise (half2 rad, half resolution) {
-            half r;
-            if (resolution < 0.0015) {
-                r = noise222(rad, half2(20.6,100.6), half2(0.9,0.1));
-            } else if (resolution < 0.005) {
-                r = noise2(rad * 20.6);
-            } else {
-                r = noise2(rad * 10.3);
-            }
-            return r - 0.5;
-        }
-
         static const half far = 10000.0;
 
-        half3 snowflake_sdf_vector (
-            half3 pos,
-            half3 ray,
-            half2 seed, half powr, half resolution
+        struct RaymarchingResult {
+            bool hit;
+            half3 position; // Point in raymarching space
+        };
+
+        RaymarchingResult snowflake_sdf_vector (
+            half3 pos, // rotated mr, not normalized
+            half3 ray, // rotated mr, normalized, from 0 to camera
+            half2 seed, half powr, // seed data
+            half resolution //
         ) {   
-            const half zoom = 1.; // use this to change details. optimal 0.1 - 4.0.
+            const half zoom = 2.; // use this to change details. optimal 0.1 - 4.0.
             const half radius = 0.25; // above too much details
             const int iterations = 15;
-            const half thickness = 0.0125;
             
             const half radius_sq = radius * radius;
-            const half3 plane_normal = half3(0, 0, 1);
-            
-            const half invn = 1.0 / dot(plane_normal, ray);
-            const half depthi = thickness * sign(invn);
-            half ds = 2 * depthi * invn;
 
-            half3 r1 = ray * (dot(plane_normal, pos) - depthi) * invn - pos;
-            half3 r2 = r1 + ray * ds;
-
-            const half len1 = length_sq(r1 + plane_normal * depthi);
-            const half len2 = length_sq(r2 - plane_normal * depthi);
+            // Snowflake geometry
+            const half3 plane_normal = half3(0, 0, 1); // unrotated, plane of the snowflake
+            const half thickness = 0.0125; // Measured along the normal
             
-            const half3 n = normalize(cross(ray, plane_normal));
-            const half mind = dot(pos, n);
-            const half3 n2 = cross(ray, n);
-            const half d = dot(n2, pos) / dot(n2, plane_normal);
-            
-            half3 distance_vector = ray * far;
+            const half inv_ray_projection_factor = 1.0 / dot(plane_normal, ray); 
+            const half thickness_facing = thickness * sign(inv_ray_projection_factor); // + if ray to front, - ray from back
+            half ds = 2 * thickness_facing * inv_ray_projection_factor; // always positive. 2 * ray distance traversing the thickness of snowflake
 
-            if (len1 < radius_sq || len2 < radius_sq || (abs(mind) < radius && abs(d) <= thickness)) {
-                if (true && len1 >= radius_sq) {
-                    half3 n3 = cross(plane_normal, n);
+            // Symmetrize pos using (0), place parallel ray at pos, then find point on plane dot(plane_normal, v) = -thickness_facing.
+            half3 p_back = ray * (dot(plane_normal, pos) - thickness_facing) * inv_ray_projection_factor - pos; // dot(p_back, plane_normal) = -tf, starts at back plane
+            half3 p_front = p_back + ray * ds; // point at plane dot(plane_normal, v) = +thickness_facing
+
+            // Project to plane dot(plane_normal, v)=0 and get "planar" distance to origin.
+            const half back_sf_planar_sqdist = length_sq(p_back + plane_normal * thickness_facing);
+            const half front_sf_planar_sqdist = length_sq(p_front - plane_normal * thickness_facing);
+            bool ray_intersects_cylinder_faces = min(back_sf_planar_sqdist, front_sf_planar_sqdist) < radius_sq;
+            
+            const half3 ray_plane_normal = normalize(cross(ray, plane_normal)); // plane normal to snowflake_plane and containing the ray. tangent to snowflake_plane
+            const half mind = dot(pos, ray_plane_normal);
+            const half3 ray_90_in_ray_plane = cross(ray, ray_plane_normal); // a vector 90d from ray in the ray plane
+            const half d = dot(ray_90_in_ray_plane, pos) / dot(ray_90_in_ray_plane, plane_normal);
+            bool ray_through_sides = abs(mind) < radius && abs(d) <= thickness; // not entirely sure.
+            
+            RaymarchingResult result;
+            result.hit = false;
+
+            if (ray_intersects_cylinder_faces || ray_through_sides) {
+                if (back_sf_planar_sqdist >= radius_sq) {
+                    // Seems to reposition p_back, p_front, and ds for the case where the ray go through the sides
+                    half3 n3 = cross(plane_normal, ray_plane_normal);
                     half a = rsqrt(radius_sq - mind * mind) * abs(dot(ray, n3));
                     half3 dt = ray / a;
-                    r1 = -d * plane_normal - mind * n - dt;
-                    if (len2 >= radius_sq) {
-                        r2 = -d * plane_normal - mind * n + dt;
+                    p_back = -d * plane_normal - mind * ray_plane_normal - dt;
+                    if (front_sf_planar_sqdist >= radius_sq) {
+                        p_front = -d * plane_normal - mind * ray_plane_normal + dt;
                     }
-                    ds = dot(r2 - r1, ray);
+                    ds = abs(dot(p_front - p_back, ray)); // moved abs here, as initial ds is always positive 
                 }
-                ds = (abs(ds) + 0.1) / iterations;
-                ds = lerp(thickness, ds, 0.2);
-                ds = max(ds, 0.01);
 
-                const half invd = 0.2 / thickness;
-                const half ir = 0.35 / radius;
-                radius *= zoom;
+                // Tuning of raymarching stepping I guess. All 3 have visual impact.
+                ds = (ds + 0.1) / iterations;
+                ds = lerp(thickness, ds, 0.2);
+                ds = max(ds, 0.01); // Ensure performance by minimum step ?
+
+                const half depth_scale = 0.2 / thickness;
+                const half internal_radius = 0.35 / radius; // Controls the secondary radius inside the large one.
                 ray = ray * ds * 5.0;
 
+                result.position = p_back;
                 for (int m = 0; m < iterations; m += 1) {
+                    half l = length(result.position.xy);
                     // Lobe construction
-                    half l = length(r1.xy);
-                    half2 c3 = abs(r1.xy / l);
+                    half2 c3 = abs(result.position.xy / l);
                     if (c3.x > 0.5) {
-                        c3 = abs(c3 * 0.5 + half2(-c3.y , c3.x) * 0.86602540);
+                        c3 = abs(c3 * 0.5 + half2(-c3.y , c3.x) * 0.86602540 /*sin(pi/3) or cos(pi/6)*/);
                     }
+                    const half g = l + c3.x * c3.x;
                     //
-                    half g = l + c3.x * c3.x;
                     l *= zoom;
                     half h = l - radius - 0.1;
-                    l = pow(l, powr) + 0.1; // Changes form
-                    h = max(h, lerp(lod_noise(c3 * l + seed, resolution), 1.0, abs(r1.z * invd))) + g * ir - 0.245; // Sample noise
-                    if (h < resolution * 20.0 || abs(r1.z) > thickness + 0.01) {
+                    l = pow(l, powr) + 0.1;
+                    const half noise = noise2_lod(c3 * l + seed, resolution);
+                    const half create_depth_variations = lerp(noise, 1.0, abs(result.position.z * depth_scale));
+                    h = max(h, create_depth_variations) + g * internal_radius - 0.245;
+                    if (h < resolution * 20.0 || abs(result.position.z) > thickness + 0.01) {
                         break;
                     }
-                    r1 += ray * h;
+                    result.position += ray * h;
                     ray *= 0.99;
                 }
-                if (abs(r1.z) < thickness + 0.01) {
-                    distance_vector = r1 + pos;
+                if (abs(result.position.z) < thickness + 0.01) {
+                    result.hit = true;
                 }
             }
-            return distance_vector;
+            return result;
         }
 
         half3 filterFlake (
@@ -212,25 +233,22 @@ SubShader {
         ) {
             const half3 ice_color = half3(0.0, 0.4, 1.0);
 
-            half3 seedn = half3(seed, 1);
-            half powr = noise3(seedn * 10.0) * 1.9 + 0.1;
+            half powr = noise3(half3(seed, 1) * 10.0) * 1.9 + 0.1; // Precomputed seed value
 
-            half3 distance_vector = snowflake_sdf_vector(pos, ray, seed, powr, resolution);
-            if (length_sq(distance_vector) < far) {
-                half3 distance_dx = snowflake_sdf_vector(pos, ray_dx, seed, powr, resolution);
-                half3 distance_dy = snowflake_sdf_vector(pos, ray_dy, seed, powr, resolution);
-                half3 snowflake_normal = normalize(cross(distance_dx - distance_vector, distance_dy - distance_vector));
+            RaymarchingResult center = snowflake_sdf_vector(pos, ray, seed, powr, resolution);
+            if (!center.hit) { discard; }
+            RaymarchingResult dx = snowflake_sdf_vector(pos, ray_dx, seed, powr, resolution);
+            RaymarchingResult dy = snowflake_sdf_vector(pos, ray_dy, seed, powr, resolution);
+            if (!(dx.hit && dy.hit)) { discard; }
 
-                // lighting
-                half abs_dot_normal_ray = abs(dot(snowflake_normal, ray));
-                half da = pow(abs(dot(snowflake_normal, light)), 3.0);
-                half3 cf = lerp(ice_color, color * 10.0, abs_dot_normal_ray);
-                cf = lerp(cf, 2, da);
-                color = lerp(color, cf, (0.5 + abs_dot_normal_ray * 0.5));
-            } else {
-                discard;
-            }
-            return color;
+            half3 snowflake_normal = normalize(cross(dx.position - center.position, dy.position - center.position));
+
+            // lighting
+            half abs_dot_normal_ray = abs(dot(snowflake_normal, ray));
+            half diffuse_ambient = pow(abs(dot(snowflake_normal, light)), 3.0);
+            half3 cf = lerp(ice_color, color * 10.0, abs_dot_normal_ray);
+            cf = lerp(cf, 2, diffuse_ambient);
+            return lerp(color, cf, (0.5 + abs_dot_normal_ray * 0.5));
         }
 
         float3 tr(float3 v) {
@@ -249,7 +267,7 @@ SubShader {
             
             //float3 pos = normalize(input.camera_os);
             //float3 ray = normalize(input.camera_to_geometry_os);
-            float3 pos = float3(0, 0, 1); // noisespace ?                    
+            float3 pos = float3(0, 0, 1); // should probably stay constant
             float3 ray = float3(p, 2.0);
             float3 ray_dx = normalize(ray + float3(0, resolution * 2, 0)); // bad
             float3 ray_dy = normalize(ray + float3(resolution * 2, 0, 0));
