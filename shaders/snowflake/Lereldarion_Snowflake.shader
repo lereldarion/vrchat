@@ -8,6 +8,8 @@ Shader "Lereldarion/Snowflakes" {
 Properties {
     _MainTex("Albedo for fallback", 2D) =  "white" { }
 
+    _Raymarching_Zoom("Zoom", Range(0.1, 4.)) = 2.
+
     _Replicator_Dislocation_Global("Dislocation Global (show, time, spatial_delay_factor, _)", Vector) = (1, 0, 0, 0)
     _Replicator_Dislocation_LeftArm("Dislocation LeftArm (show_upper_bound, animation_lower_bound, time, _)", Vector) = (1, 1, 0, 0)
     _Replicator_Dislocation_RightArm("Dislocation RightArm (show_upper_bound, animation_lower_bound, time, _)", Vector) = (1, 1, 0, 0)
@@ -44,16 +46,6 @@ SubShader {
         // [0-1]
         float4 hash4 (float4 n) { return frac(sin(n) * 1399763.5453123); }
 
-        // [0-1]
-        float noise2 (float2 x) {
-            float2 p = floor(x);
-            float2 f = frac(x);
-            f = f * f * (3.0 - 2.0 * f);
-            float n = p.x + p.y * 157.0;
-            float4 h = hash4(n + float4(NC0.xy, NC1.xy));
-            float2 s1 = lerp(h.xy, h.zw, f.xx);
-            return lerp(s1.x, s1.y, f.y);
-        }
         // [0-1], more details
         float noise222 (float2 x, float2 y, float2 z) {
             float4 lx = x.xyxy * y.xxyy;
@@ -65,16 +57,10 @@ SubShader {
             return dot(lerp(h.xz, h.yw, f.yw), z);
         }
         // [-0.5, 0.5]
-        float noise2_lod (float2 rad, float resolution) {
-            float r;
-            if (resolution < 0.0015) {
-                r = noise222(rad, float2(20.6, 100.6), float2(0.9, 0.1));
-            } else if (resolution < 0.005) {
-                r = noise2(rad * 20.6);
-            } else {
-                r = noise2(rad * 10.3); // visually different from above ; remove ?
-            }
-            return r - 0.5;
+        float noise2_centered (float2 p) {
+            // It initially used a LOD switch to 3 versions with various details.
+            // Removed for simplicity. Maybe swap to noise texture to remove sin calls.
+            return noise222(p, float2(20.6, 100.6), float2(0.9, 0.1)) - 0.5;
         }
 
         // [0-1]
@@ -89,21 +75,19 @@ SubShader {
 
         // Raymarching
 
+        uniform float _Raymarching_Zoom;
+
         struct RaymarchingResult {
             bool hit;
             float3 position; // Point in raymarching space
         };
         RaymarchingResult raycast_snowflake (
             float3 camera, float3 ray, // OS, ray = from camera to geometry normalized
-            float3 seed_data,
-            float resolution //
+            float3 seed_data
         ) {
-            const float zoom = 2.; // use this to change details. optimal 0.1 - 4.0.
-            const float radius = 0.25; // above too much details
-            const int iterations = 15;
+            const float zoom = _Raymarching_Zoom; // use this to change details. optimal 0.1 - 4.0.
+            const float snowflake_radius = 0.25; // above too much details
             
-            const float radius_sq = radius * radius;
-
             // Snowflake geometry : flat 
             const float3 snowflake_origin = float3(0, 0, 0);
             const float3 snowflake_normal = float3(0, 0, 1); // plane of the snowflake in OS
@@ -116,8 +100,9 @@ SubShader {
             const float plane_z_to_ray_factor = 1. / dot(ray, snowflake_normal);
             const float3 p_start = camera + (thickness_facing - plane_to_camera_z) * plane_z_to_ray_factor * ray; // hit first face plane
             const float3 p_end = camera + (-thickness_facing - plane_to_camera_z) * plane_z_to_ray_factor * ray; // hit to back face plane
-            const float ray_length_through_snowflake = 2 * thickness * plane_z_to_ray_factor * -camera_side;
+            const float ray_length_through_snowflake = 2 * thickness_facing * -plane_z_to_ray_factor;
 
+            const float radius_sq = snowflake_radius * snowflake_radius;
             const float start_radius_sq = length_sq(p_start - (snowflake_origin + thickness_facing * snowflake_normal));
             const float end_radius_sq = length_sq(p_end - (snowflake_origin - thickness_facing * snowflake_normal));
             bool ray_intersects_cylinder_faces = (ray_length_through_snowflake > 0) && min(start_radius_sq, end_radius_sq) < radius_sq;
@@ -138,11 +123,11 @@ SubShader {
             const float mind = dot(camera, ray_plane_normal);
             const float3 ray_90_in_ray_plane = cross(ray, ray_plane_normal); // a vector 90d from ray in the ray plane
             const float d = dot(ray_90_in_ray_plane, camera) / dot(ray_90_in_ray_plane, snowflake_normal);
-            bool ray_through_sides = abs(mind) < radius && abs(d) <= thickness; // not entirely sure.*/
+            bool ray_through_sides = abs(mind) < snowflake_radius && abs(d) <= thickness; // not entirely sure.*/
             
             RaymarchingResult result;
             result.hit = false;
-            result.position = float3(0, 0, 0);
+            result.position = p_start;
 
             if (ray_intersects_cylinder_faces) {
                 /*if (back_sf_planar_sqdist >= radius_sq) {
@@ -157,36 +142,37 @@ SubShader {
                     ds = abs(dot(p_front - p_back, ray)); // moved abs here, as initial ds is always positive 
                 }*/
 
-                // Tuning of raymarching stepping I guess. All 3 have visual impact.
+                // Tuning of raymarching stepping. All 3 have visual impact.
+                const int iterations = 15;
                 float ds = ray_length_through_snowflake;
-                ds = (ds + 0.1) / iterations;
-                ds = lerp(thickness, ds, 0.2);
+                ds = ds / iterations;
+                ds = lerp(thickness, ds, 0.2); // 80% thickness
                 ds = max(ds, 0.01); // Ensure performance by minimum step ?
-
-                const float depth_scale = 0.2 / thickness;
-                const float internal_radius = 0.35 / radius; // Controls the secondary radius inside the large one.
-                ray = ray * ds * 5.0;
+                ray = ray * ds * 5.0; // why 5 ?
 
                 result.position = p_start;
                 for (int m = 0; m < iterations; m += 1) {
-                    float l = length(result.position.xy);
-                    // Lobe construction
-                    float2 c3 = abs(result.position.xy / l);
+                    // Related to lobe construction. 
+                    const float position_radius = length(result.position.xy);
+                    float2 c3 = abs(result.position.xy / position_radius); // [0, 1]^2
                     if (c3.x > 0.5) {
-                        c3 = abs(c3 * 0.5 + float2(-c3.y , c3.x) * 0.86602540 /*sin(pi/3) or cos(pi/6)*/);
+                        c3 = abs(c3 * 0.5 + float2(-c3.y , c3.x) * 0.86602540 /*sin(pi/3) or cos(pi/6)*/); // tweak 2d field, probably creates the lobes with noise
                     }
-                    const float g = l + c3.x * c3.x;
-                    // 
-                    l *= zoom;
-                    float h = l - radius - 0.1;
-                    l = pow(l, seed_data.z) + 0.1;
-                    const float noise = noise2_lod(c3 * l + seed_data.xy, resolution);
-                    const float create_depth_variations = lerp(noise, 1.0, abs(result.position.z * depth_scale));
-                    h = max(h, create_depth_variations) + g * internal_radius - 0.245;
-                    if (h < resolution * 20.0 || abs(result.position.z) > thickness + 0.01) {
-                        break;
+                    // Iterate back and forth along ray. Not really marching, no SDF.
+                    const float zoomed_radius = position_radius * zoom;
+                    const float noise = noise2_centered(c3 * (pow(zoomed_radius, seed_data.z) + 0.1) + seed_data.xy); // [-0.5, 0.5]
+                    const float up_biased_noise = lerp(noise, 1.0, abs(result.position.z * (0.2 / thickness))); // blend with positive bias, up to 0.2 at |z|=thickness
+                    const float displacement = 
+                        max(
+                            zoomed_radius - snowflake_radius - 0.1, // [-snowflake_radius - 0.1, (zoom-1) * snowflake_radius - 0.1]
+                            up_biased_noise // [-0.5, 0.6]
+                        )
+                        + (position_radius + c3.x * c3.x) * (0.35 / snowflake_radius) // pos snowflake_radius + lobe tweak, normalised to [0, 0.35]
+                        - 0.7 * 0.35;
+                    if (displacement < 0 || abs(result.position.z) > thickness + 0.01) {
+                        break; // Stop if negative or out of bounds
                     }
-                    result.position += ray * h;
+                    result.position += ray * displacement;
                     ray *= 0.99;
                 }
                 if (abs(result.position.z) < thickness + 0.01) {
@@ -199,25 +185,38 @@ SubShader {
         float3 filter_flake (
             float3 color,
             float3 camera,
-            float3 ray, float3 ray_dx, float3 ray_dy, // normalized
+            float3 ray, // normalized
             float3 light,
-            float3 seed_data, float resolution
+            float3 seed_data
         ) {
             const float3 ice_color = float3(0.0, 0.4, 1.0);
 
-            RaymarchingResult center = raycast_snowflake(camera, ray, seed_data, resolution);
-            if (!center.hit) { discard; }
-            RaymarchingResult dx = raycast_snowflake(camera, ray_dx, seed_data, resolution);
-            RaymarchingResult dy = raycast_snowflake(camera, ray_dy, seed_data, resolution);
-            if (!(dx.hit && dy.hit)) { discard; }
+            RaymarchingResult pixel = raycast_snowflake(camera, ray, seed_data);
+            if (!pixel.hit) { discard; }
 
-            float3 snowflake_normal = normalize(cross(dx.position - center.position, dy.position - center.position));
+            // Less quality than doing 3 raycast, but way cheaper.
+            float3 dx_delta = ddx_fine(pixel.position);
+            float3 dy_delta = ddy_fine(pixel.position);
+            float3 snowflake_normal = normalize(cross(dx_delta, dy_delta));
+
+            /* TODO  marching for derivatives should be done on the face coordinates, with snowflake_radius related resolution
+            float2 inv_pixel_size = _ScreenParams.zw - 1;
+            float3 ray_dx = normalize(ray + float3(0, inv_pixel_size.y * 2, 0)); // bad
+            float3 ray_dy = normalize(ray + float3(inv_pixel_size.x * 2, 0, 0));
+            RaymarchingResult dx = raycast_snowflake(camera, ray_dx, seed_data);
+            RaymarchingResult dy = raycast_snowflake(camera, ray_dy, seed_data);
+            if (!(dx.hit && dy.hit)) { discard; }
+            float3 snowflake_normal = normalize(cross(dx.position - pixel.position, dy.position - pixel.position));
+            */
 
             // lighting
             float abs_dot_normal_ray = abs(dot(snowflake_normal, ray));
             float diffuse_ambient = pow(abs(dot(snowflake_normal, light)), 3.0);
             float3 cf = lerp(ice_color, color * 10.0, abs_dot_normal_ray);
             cf = lerp(cf, 2, diffuse_ambient);
+            
+            // TODO use reflection box ? depth ?
+            
             return lerp(color, cf, (0.5 + abs_dot_normal_ray * 0.5));
         }
 
@@ -225,18 +224,16 @@ SubShader {
 
         struct VertexData {
             float4 position_os : POSITION;
-            float2 uv0 : TEXCOORD0;
             UNITY_VERTEX_INPUT_INSTANCE_ID
         };
 
         struct FragmentData {
             float4 position_cs : SV_POSITION;
             float3 seed_data : TEXCOORD0;
-            float2 uv0 : TEXCOORD1;
 
-            float3 camera_os : TEXCOORD2;
-            float3 camera_to_geometry_os : TEXCOORD3;
-            float3 light_to_geometry_os : TEXCOORD4;        
+            float3 camera_os : TEXCOORD1;
+            float3 camera_to_geometry_os : TEXCOORD2;
+            float3 light_to_geometry_os : TEXCOORD3;        
 
             UNITY_VERTEX_INPUT_INSTANCE_ID
             UNITY_VERTEX_OUTPUT_STEREO
@@ -252,7 +249,6 @@ SubShader {
             UNITY_SETUP_INSTANCE_ID(input);
             FragmentData output;
             output.position_cs = UnityObjectToClipPos(input.position_os);
-            output.uv0 = input.uv0;
 
             // TODO use triangle id from geometry pass
             #if defined(UNITY_INSTANCING_ENABLED)
@@ -262,9 +258,9 @@ SubShader {
             #endif
             output.seed_data = make_seed_data(id);
 
-            output.camera_os = mul(unity_WorldToObject, _WorldSpaceCameraPos).xyz;
+            output.camera_os = mul(unity_WorldToObject, float4(_WorldSpaceCameraPos, 1)).xyz;
             output.camera_to_geometry_os = input.position_os.xyz - output.camera_os;
-            output.light_to_geometry_os = input.position_os.xyz - mul(unity_WorldToObject, _WorldSpaceLightPos0);
+            output.light_to_geometry_os = input.position_os.xyz - mul(unity_WorldToObject, _WorldSpaceLightPos0).xyz;
             
             UNITY_TRANSFER_INSTANCE_ID(input, output);
             UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
@@ -276,26 +272,15 @@ SubShader {
             UNITY_SETUP_INSTANCE_ID(input);
             UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
-            float2 inv_pixel_size = _ScreenParams.zw - 1;
-            float resolution = min(inv_pixel_size.x, inv_pixel_size.y);
 
             float3 camera = input.camera_os;
             float3 ray = normalize(input.camera_to_geometry_os);
+            float3 light = normalize(input.light_to_geometry_os);
             
-            //float3 camera = _Pos.xyz; // should probably stay constant
-            //float3 ray = normalize(float3(input.uv0 * 2 - 1, 2));
-            float3 ray_dx = normalize(ray + float3(0, resolution * 2, 0)); // bad
-            float3 ray_dy = normalize(ray + float3(resolution * 2, 0, 0));
-            
-            float3 light = normalize(float3(1, 0, 1));
-
             float3 color = filter_flake(
                 float3(0, 0, 0), // current color
-                camera,
-                ray, ray_dx, ray_dy,
-                light,
-                input.seed_data,
-                resolution
+                camera, ray, light,
+                input.seed_data
             );
             return float4(color, 1);
         }

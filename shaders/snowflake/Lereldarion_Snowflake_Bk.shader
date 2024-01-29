@@ -103,7 +103,7 @@ SubShader {
             half3 seed_data,
             half resolution //
         ) {
-            const half zoom = 2.; // use this to change details. optimal 0.1 - 4.0.
+            const half zoom = 4.; // use this to change details. optimal 0.1 - 4.0.
             const half radius = 0.25; // above too much details
             const int iterations = 15;
             
@@ -254,7 +254,7 @@ SubShader {
             #endif
             output.seed_data = make_seed_data(id);
 
-            output.camera_os = mul(unity_WorldToObject, _WorldSpaceCameraPos).xyz;
+            output.camera_os = mul(unity_WorldToObject, float4(_WorldSpaceCameraPos, 1)).xyz;
             output.geometry_to_camera_os = output.camera_os - input.position_os.xyz;
             output.light_to_geometry_os = input.position_os.xyz - mul(unity_WorldToObject, _WorldSpaceLightPos0);
             
@@ -271,11 +271,11 @@ SubShader {
             float2 inv_pixel_size = _ScreenParams.zw - 1;
             float resolution = min(inv_pixel_size.x, inv_pixel_size.y);
 
-            //float3 pos = input.camera_os;
-            //float3 ray = normalize(input.geometry_to_camera_os);
+            float3 pos = input.camera_os;
+            float3 ray = normalize(input.geometry_to_camera_os);
             
-            float3 pos = _Pos.xyz; // should probably stay constant
-            float3 ray = normalize(float3(input.uv0 * 2 - 1, 2));
+            //float3 pos = _Pos.xyz; // should probably stay constant
+            //float3 ray = normalize(float3(input.uv0 * 2 - 1, 2));
             float3 ray_dx = normalize(ray + float3(0, resolution * 2, 0)); // bad
             float3 ray_dy = normalize(ray + float3(resolution * 2, 0, 0));
             
