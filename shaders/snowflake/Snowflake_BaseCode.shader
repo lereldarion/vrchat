@@ -4,7 +4,7 @@
 // TODO match raymarched space to ws/os
 // TODO add geometry pass to retrieve primitive_id and create support geometry
 
-Shader "Lereldarion/Snowflakes_Bk" {
+Shader "Lereldarion/Snowflakes_BaseCode" {
 Properties {
     _MainTex("Albedo for fallback", 2D) =  "white" { }
 

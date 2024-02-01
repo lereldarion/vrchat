@@ -4,15 +4,11 @@
 // TODO match raymarched space to ws/os
 // TODO add geometry pass to retrieve primitive_id and create support geometry
 
-Shader "Lereldarion/Snowflakes" {
+Shader "Lereldarion/Snowflakes_Os" {
 Properties {
     _MainTex("Albedo for fallback", 2D) =  "white" { }
 
     _Raymarching_Zoom("Zoom", Range(0.1, 4.)) = 2.
-
-    _Replicator_Dislocation_Global("Dislocation Global (show, time, spatial_delay_factor, _)", Vector) = (1, 0, 0, 0)
-    _Replicator_Dislocation_LeftArm("Dislocation LeftArm (show_upper_bound, animation_lower_bound, time, _)", Vector) = (1, 1, 0, 0)
-    _Replicator_Dislocation_RightArm("Dislocation RightArm (show_upper_bound, animation_lower_bound, time, _)", Vector) = (1, 1, 0, 0)
 }
 
 SubShader {
@@ -148,9 +144,8 @@ SubShader {
                 ds = ds / iterations;
                 ds = lerp(thickness, ds, 0.2); // 80% thickness
                 ds = max(ds, 0.01); // Ensure performance by minimum step ?
-                ray = ray * ds * 5.0; // why 5 ?
+                ray = ray * ds * 5.0; // [3, 10] tested and ok.
 
-                result.position = p_start;
                 for (int m = 0; m < iterations; m += 1) {
                     // Related to lobe construction. 
                     const float position_radius = length(result.position.xy);
@@ -161,14 +156,15 @@ SubShader {
                     // Iterate back and forth along ray. Not really marching, no SDF.
                     const float zoomed_radius = position_radius * zoom;
                     const float noise = noise2_centered(c3 * (pow(zoomed_radius, seed_data.z) + 0.1) + seed_data.xy); // [-0.5, 0.5]
-                    const float up_biased_noise = lerp(noise, 1.0, abs(result.position.z * (0.2 / thickness))); // blend with positive bias, up to 0.2 at |z|=thickness
+                    const float up_biased_noise = lerp(noise, 1.0, abs(result.position.z * (0.2 / thickness))); // blend with positive bias, up to 0.2 at |z|=thickness. 0.2 critical.
+                    const float fill_factor = 0.35; // 0.25 starts making rings, nice up to 1, afterwards it becomes very skinny
                     const float displacement = 
                         max(
-                            zoomed_radius - snowflake_radius - 0.1, // [-snowflake_radius - 0.1, (zoom-1) * snowflake_radius - 0.1]
+                            zoomed_radius - snowflake_radius - 0.1, // [-snowflake_radius - 0.1, (zoom-1) * snowflake_radius - 0.1]. 0.1 kills outer circle sometimes
                             up_biased_noise // [-0.5, 0.6]
                         )
-                        + (position_radius + c3.x * c3.x) * (0.35 / snowflake_radius) // pos snowflake_radius + lobe tweak, normalised to [0, 0.35]
-                        - 0.7 * 0.35;
+                        + (position_radius + c3.x * c3.x) * (fill_factor / snowflake_radius) // pos snowflake_radius + lobe tweak, normalised to [0, 0.35]
+                        - 0.7 * fill_factor;
                     if (displacement < 0 || abs(result.position.z) > thickness + 0.01) {
                         break; // Stop if negative or out of bounds
                     }
