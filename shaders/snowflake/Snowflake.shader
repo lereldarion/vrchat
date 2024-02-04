@@ -33,8 +33,11 @@ SubShader {
     ZWrite On
     Cull Off // FIXME not needed for box mode
 
-    Pass
-    {
+    Pass {
+        Tags {
+            "LightMode" = "ForwardBase"
+        }
+
         CGPROGRAM
         #pragma vertex Vertex
         #pragma geometry Geometry
@@ -60,10 +63,14 @@ SubShader {
             float4 position_cs : SV_POSITION;
             float3 seed_data : TEXCOORD0;
 
-            // In raymarched space
-            float3 camera : TEXCOORD1;
-            float3 camera_to_geometry : TEXCOORD2;
-            float3 light_to_geometry : TEXCOORD3;        
+            float3 camera_ts : TEXCOORD1;
+            float3 geometry_ts : TEXCOORD2;
+
+            float4 ts_to_ws_0 : TEXCOORD3;
+            float4 ts_to_ws_1 : TEXCOORD4;
+            float4 ts_to_ws_2 : TEXCOORD5;
+
+            float3 camera_to_geometry_ws : TEXCOORD6;
 
             UNITY_VERTEX_INPUT_INSTANCE_ID
             UNITY_VERTEX_OUTPUT_STEREO
@@ -224,34 +231,6 @@ SubShader {
             return result;
         }
 
-        float3 filter_flake (
-            float3 color,
-            float3 camera,
-            float3 ray, // normalized
-            float3 light,
-            float3 seed_data
-        ) {
-            const float3 ice_color = float3(0.0, 0.4, 1.0);
-
-            RaymarchingResult pixel = raycast_snowflake(camera, ray, seed_data);
-            if (!pixel.hit) { discard; }
-
-            // Less quality than doing 3 raycast, but way cheaper.
-            float3 dx_delta = ddx_fine(pixel.position);
-            float3 dy_delta = ddy_fine(pixel.position);
-            float3 snowflake_normal = normalize(cross(dx_delta, dy_delta));
-
-            // lighting
-            float abs_dot_normal_ray = abs(dot(snowflake_normal, ray));
-            float diffuse_ambient = pow(abs(dot(snowflake_normal, light)), 3.0);
-            float3 cf = lerp(ice_color, color * 10.0, abs_dot_normal_ray);
-            cf = lerp(cf, 2, diffuse_ambient);
-            
-            // TODO use reflection box ? depth ?
-            
-            return lerp(color, cf, (0.5 + abs_dot_normal_ray * 0.5));
-        }
-
         float3 make_seed_data(uint snowflake_id) {
             float random = baked_random_constants[snowflake_id % nb_baked_random_constants];
             float2 seed = float2(random, 1 + snowflake_id);
@@ -389,8 +368,8 @@ SubShader {
                 ts_to_os[i].xyz = new_ts_to_os_rot[i];
             }
             // Fall translation
-            float3 gravity = float3(0, -7, 0); // Unity up = +Y ; reduced for slower animation.
-            float3 initial_velocity = random_vec.xyz * object_to_world_scale();
+            float3 gravity = float3(0, -3, 0); // Unity up = +Y ; heavily reduced for light flakes
+            float3 initial_velocity = random_vec.xyz * object_to_world_scale() + float3(0, 1, 0); // Add vertical bias for snow
             float3 translation_ws = initial_velocity * time + 0.5 * gravity * time * time;
             ts_to_os._m03_m13_m23 += mul(unity_WorldToObject, translation_ws);
         }
@@ -433,48 +412,76 @@ SubShader {
 
             float4x4 ts_to_os = ts_to_os_from_triangle_position_manual(input);
             animate_ts_to_os(ts_to_os, random_float3_float(snowflake_id), config.time);
-            float4x4 os_to_ts = inverse_ts_to_os(ts_to_os);
+            const float4x4 ts_to_ws = mul(unity_ObjectToWorld, ts_to_os);
 
             FragmentData output;
             UNITY_TRANSFER_INSTANCE_ID(input[0], output);
             UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
-            output.camera = mul(os_to_ts, mul(unity_WorldToObject, float4(_WorldSpaceCameraPos, 1)));
             output.seed_data = make_seed_data(snowflake_id);
-
-            // https://docs.unity3d.com/Manual/SL-UnityShaderVariables.html LightPos.w = 0 if direction, 1 if point
-            // If direction, 0 will ignore all translation below, great.
-            const bool light_is_pos = _WorldSpaceLightPos0.w > 0;
-            const float3 light_ts = mul(os_to_ts, mul(unity_WorldToObject, _WorldSpaceLightPos0)).xyz;
+            output.camera_ts = mul(inverse_ts_to_os(ts_to_os), mul(unity_WorldToObject, float4(_WorldSpaceCameraPos, 1)));
+            output.ts_to_ws_0 = ts_to_ws[0];
+            output.ts_to_ws_1 = ts_to_ws[1];
+            output.ts_to_ws_2 = ts_to_ws[2];
 
             for (uint i = 0; i < 4; i += 1) {
                 float3 vertex_ts = baked_snowflake_plane[i] * _Raymarching_Geometry_Scale;
-
-                output.position_cs = UnityObjectToClipPos(mul(ts_to_os, float4(vertex_ts, 1)));
-
-                output.camera_to_geometry = vertex_ts - output.camera;
-                output.light_to_geometry = light_is_pos ? vertex_ts - light_ts : light_ts;
-
+                output.geometry_ts = vertex_ts;
+                float3 vertex_ws = mul(ts_to_ws, float4(vertex_ts, 1)).xyz;
+                output.camera_to_geometry_ws = vertex_ws - _WorldSpaceCameraPos;
+                output.position_cs = mul(UNITY_MATRIX_VP, float4(vertex_ws, 1));
                 stream.Append(output);
             }
         }
 
-        float4 Fragment (FragmentData input) : SV_Target {
+        struct RenderResult {
+            half4 color : SV_Target;
+            float depth : SV_DepthLessEqual;
+        };
+        RenderResult Fragment (FragmentData input) {
             UNITY_SETUP_INSTANCE_ID(input);
             UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
-            // Already in TS
-            float3 camera = input.camera;
-            float3 ray = normalize(input.camera_to_geometry);
-            float3 light = normalize(input.light_to_geometry);
+            RenderResult result;
             
-            float3 color = filter_flake(
-                float3(0, 0, 0), // current color
-                camera, ray, light,
-                input.seed_data
-            );
-            return float4(color, 1);
-        }
+            const float3 ray_ts = normalize(input.geometry_ts - input.camera_ts);
+            const RaymarchingResult pixel = raycast_snowflake(input.camera_ts, ray_ts, input.seed_data);
+            if (!pixel.hit) { discard; }
 
+            const float4x4 ts_to_ws = float4x4(
+                input.ts_to_ws_0,
+                input.ts_to_ws_1,
+                input.ts_to_ws_2,
+                float4(0, 0, 0, 1)
+            );
+
+            // Geometry info in world space
+            // Less quality than doing 3 raycast, but 3x cheaper and good enough at VR resolutions
+            const float3 position_ws = mul(ts_to_ws, float4(pixel.position, 1)).xyz;
+            const float3 dx_delta = ddx_fine(position_ws);
+            const float3 dy_delta = ddy_fine(position_ws);
+            const float3 normal_ws = normalize(cross(dx_delta, dy_delta));
+            const float3 ray_ws = normalize(input.camera_to_geometry_ws);
+
+            // Lighting
+            const float3 ice_color = float3(0.0, 0.4, 1.0);
+
+            half4 background_data = UNITY_SAMPLE_TEXCUBE(unity_SpecCube0, ray_ws);
+            half3 background_color = DecodeHDR (background_data, unity_SpecCube0_HDR);
+
+            // TODO reflection
+            
+            float abs_dot_normal_ray = abs(dot(normal_ws, ray_ws));
+            float diffuse_ambient = pow(abs(dot(normal_ws, _WorldSpaceLightPos0.xyz)), 3.0);
+            half3 cf = lerp(ice_color, background_color, abs_dot_normal_ray);
+            cf = lerp(cf, 2, diffuse_ambient);
+            half3 final_color = lerp(background_color, cf, (0.5 + abs_dot_normal_ray * 0.5));
+            result.color = half4(final_color, 1);
+
+            // Depth
+            const float4 position_cs = mul(UNITY_MATRIX_VP, float4(position_ws, 1));
+            result.depth = position_cs.z / position_cs.w;
+            return result;
+        }
         ENDCG
     }
 }
