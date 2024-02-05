@@ -1,17 +1,15 @@
-// Render blocs as raymarched fake snowflakes, unlit
+// Render blocs as raymarched snowflakes
 // Adapted from https://www.shadertoy.com/view/Xsd3zf
-
-// TODO lighting improvements
-// TODO inside-out box + write depth ?
+// Has some Forward Rendering lighting. No add pass or shadow casting to avoid doing marching too much.
 
 Shader "Lereldarion/Replicator/Snowflake" {
 Properties {
     _MainTex("Fallback", 2D) = "white" { }
 
-    // Raymarching stuff
+    // Raymarching config
     _Raymarching_Zoom("Zoom", Range(0.1, 4.)) = 3
-    _Raymarching_Space_Scale("Snowflake scale", Range(0.1, 10)) = 1
-    _Raymarching_Geometry_Scale("Geometry Scale", Range(0.1, 10)) = 1 // At higher zoom the flake does not occupy all of the radius-based geometry
+    _Raymarching_Space_Scale("Snowflake scale", Range(0.1, 10)) = 2
+    _Raymarching_Geometry_Radius_Scale("Support Geometry Radius Scale", Range(0.4, 1)) = 0.6 // At higher zoom the flake does not occupy all of the radius-based geometry
 
     // Base animations
     _Replicator_Dislocation_Global("Dislocation Global (show, time, spatial_delay_factor, _)", Vector) = (1, 0, 0, 0)
@@ -31,7 +29,6 @@ SubShader {
     }
 
     ZWrite On
-    Cull Off // FIXME not needed for box mode
 
     Pass {
         Tags {
@@ -43,6 +40,10 @@ SubShader {
         #pragma geometry Geometry
         #pragma fragment Fragment
 		#pragma multi_compile_instancing
+		#pragma multi_compile_fwdbase
+
+        // For avatar only
+        #pragma skip_variants DYNAMICLIGHTMAP_ON LIGHTMAP_ON LIGHTMAP_SHADOW_MIXING DIRLIGHTMAP_COMBINED
 
         #include "UnityCG.cginc"
         #pragma target 5.0
@@ -119,85 +120,71 @@ SubShader {
 
         uniform float _Raymarching_Zoom;
 
-        // Snowflake geometry : flat 
+        // Snowflake geometry : contained in a flat cylinder centered at 0, axis is z, radius on xy
         static const float3 snowflake_origin = float3(0, 0, 0);
-        static const float3 snowflake_normal = float3(0, 0, 1); // plane of the snowflake in OS
-        static const float snowflake_thickness = 0.0125; // Measured along the normal ; Z thickness
-        static const float snowflake_radius = 0.25; // above too much details
+        static const float3 snowflake_normal = float3(0, 0, 1);
+        static const float snowflake_z_thickness = 0.0125; // z thickness on both sides
+        static const float snowflake_xy_radius = 0.25; // above too much details
 
-        static const float3 baked_snowflake_plane[4] = {
-            float3(-snowflake_radius, -snowflake_radius, 0),
-            float3(-snowflake_radius, snowflake_radius, 0),
-            float3(snowflake_radius, -snowflake_radius, 0),
-            float3(snowflake_radius, snowflake_radius, 0),
+        struct MaybePoint {
+            float3 position;
+            bool valid;
         };
-
-        struct RaymarchingResult {
-            bool hit;
-            float3 position; // Point in raymarching space
-        };
-        RaymarchingResult raycast_snowflake (
-            float3 camera, float3 ray, // in snowflake space, ray = from camera to geometry normalized
-            float3 seed_data
-        ) {
+        // in snowflake space, ray = from camera to geometry normalized
+        MaybePoint raycast_snowflake (const float3 camera, const float3 ray, const float3 seed_data) {
             const float zoom = _Raymarching_Zoom; // use this to change details. optimal 0.1 - 4.0.
+
+            const float radius_sq = snowflake_xy_radius * snowflake_xy_radius;
+            const float z_to_ray_factor = 1. / ray.z;
+            const float thickness_z_toward_camera = snowflake_z_thickness * sign(camera.z);
+
+            // Find intersect points ; negative values are discarded so they are also used as invalid markers
+            float ray_t_front = -1;
+            float ray_t_back = -2;
+
+            // Cylinder faces ; see if plane intersect is within cylinder radius
+            const float ray_t_front_plane = (thickness_z_toward_camera - camera.z) * z_to_ray_factor;
+            const float3 front_plane_intersect = camera + ray * ray_t_front_plane;
+            if (length_sq(front_plane_intersect.xy) < radius_sq) { ray_t_front = ray_t_front_plane; }
+
+            const float ray_t_back_plane = (-thickness_z_toward_camera - camera.z) * z_to_ray_factor;
+            const float3 back_plane_intersect = camera + ray * ray_t_back_plane;
+            if (length_sq(back_plane_intersect.xy) < radius_sq) { ray_t_back = ray_t_back_plane; }
+
+            MaybePoint result;
+            result.valid = false;
+            result.position = front_plane_intersect; // Start point of marching. Unconditional assignement because it must be set to something for ddx/y normals.
             
-            const float plane_to_camera_z = dot(camera - snowflake_origin, snowflake_normal);
-            const float camera_side = sign(plane_to_camera_z); // +1 if forward, -1 if back
-            const float thickness_facing = snowflake_thickness * camera_side; // +thickness if camera.z>0, -thickness instead
-            
-            const float plane_z_to_ray_factor = 1. / dot(ray, snowflake_normal);
-            const float3 p_start = camera + (thickness_facing - plane_to_camera_z) * plane_z_to_ray_factor * ray; // hit first face plane
-            const float3 p_end = camera + (-thickness_facing - plane_to_camera_z) * plane_z_to_ray_factor * ray; // hit to back face plane
-            const float ray_length_through_snowflake = 2 * thickness_facing * -plane_z_to_ray_factor;
+            // Cylinder barrel ; solve radius^2 = lenght_sq((camera + ray * t).xy)
+            const float polynom_a = length_sq(ray.xy);
+            const float polynom_b_div_2 = dot(camera.xy, ray.xy);
+            const float polynom_c = length_sq(camera.xy) - radius_sq;
+            const float discriminant_div_4 = polynom_b_div_2 * polynom_b_div_2 - polynom_a * polynom_c;
+            if (discriminant_div_4 > 0) {
+                const float sqrt_discriminant_div_2 = sqrt(discriminant_div_4);
+                const float denominator_factor_x_2 = 1. / polynom_a;
 
-            const float radius_sq = snowflake_radius * snowflake_radius;
-            const float start_radius_sq = length_sq(p_start - (snowflake_origin + thickness_facing * snowflake_normal));
-            const float end_radius_sq = length_sq(p_end - (snowflake_origin - thickness_facing * snowflake_normal));
-            bool ray_intersects_cylinder_faces = (ray_length_through_snowflake > 0) && min(start_radius_sq, end_radius_sq) < radius_sq;
+                const float ray_t_front_barrel = denominator_factor_x_2 * (-polynom_b_div_2 - sqrt_discriminant_div_2);
+                const float3 front_barrel_intersect = camera + ray * ray_t_front_barrel;
+                if (abs(front_barrel_intersect.z) < snowflake_z_thickness) {
+                    ray_t_front = ray_t_front_barrel;
+                    result.position = front_barrel_intersect;
+                }
 
-            /*const float inv_ray_projection_factor = 1.0 / dot(snowflake_normal, ray);
-            const float thickness_facing = snowflake_thickness * sign(inv_ray_projection_factor); // + if ray to front, - ray from back
-            float ds = 2 * thickness_facing * inv_ray_projection_factor; // always positive. 2 * ray distance traversing the thickness of snowflake
-            // Symmetrize camera using (0), place parallel ray at camera, then find point on plane dot(snowflake_normal, v) = -thickness_facing.
-            float3 p_back = ray * (dot(snowflake_normal, camera) - thickness_facing) * inv_ray_projection_factor - camera; // dot(p_back, snowflake_normal) = -tf, starts at back plane
-            float3 p_front = p_back + ray * ds; // point at plane dot(snowflake_normal, v) = +thickness_facing
+                const float ray_t_back_barrel = denominator_factor_x_2 * (-polynom_b_div_2 + sqrt_discriminant_div_2);
+                const float3 back_barrel_intersect = camera + ray * ray_t_back_barrel;
+                if (abs(back_barrel_intersect.z) < snowflake_z_thickness) { ray_t_back = ray_t_back_barrel; }
+            }
 
-            // Project to plane dot(snowflake_normal, v)=0 and get "planar" distance to origin.
-            const float back_sf_planar_sqdist = length_sq(p_back + snowflake_normal * thickness_facing);
-            const float front_sf_planar_sqdist = length_sq(p_front - snowflake_normal * thickness_facing);
-            bool ray_intersects_cylinder_faces = min(back_sf_planar_sqdist, front_sf_planar_sqdist) < radius_sq;
-            
-            const float3 ray_plane_normal = normalize(cross(ray, snowflake_normal)); // plane normal to snowflake_plane and containing the ray. tangent to snowflake_plane
-            const float mind = dot(camera, ray_plane_normal);
-            const float3 ray_90_in_ray_plane = cross(ray, ray_plane_normal); // a vector 90d from ray in the ray plane
-            const float d = dot(ray_90_in_ray_plane, camera) / dot(ray_90_in_ray_plane, snowflake_normal);
-            bool ray_through_sides = abs(mind) < snowflake_radius && abs(d) <= snowflake_thickness; // not entirely sure.*/
-            
-            RaymarchingResult result;
-            result.hit = false;
-            result.position = p_start;
+            const float ray_t_inside_snowflake = ray_t_back - ray_t_front;
 
-            if (ray_intersects_cylinder_faces) {
-                /*if (back_sf_planar_sqdist >= radius_sq) {
-                    // Seems to reposition p_back, p_front, and ds for the case where the ray go through the sides
-                    float3 n3 = cross(snowflake_normal, ray_plane_normal);
-                    float a = rsqrt(radius_sq - mind * mind) * abs(dot(ray, n3));
-                    float3 dt = ray / a;
-                    p_back = -d * snowflake_normal - mind * ray_plane_normal - dt;
-                    if (front_sf_planar_sqdist >= radius_sq) {
-                        p_front = -d * snowflake_normal - mind * ray_plane_normal + dt;
-                    }
-                    ds = abs(dot(p_front - p_back, ray)); // moved abs here, as initial ds is always positive 
-                }*/
-
+            if (ray_t_front > 0 && ray_t_inside_snowflake > 0) {
                 // Tuning of raymarching stepping. All 3 have visual impact.
                 const int iterations = 15;
-                float ds = ray_length_through_snowflake;
-                ds = ds / iterations;
-                ds = lerp(snowflake_thickness, ds, 0.2); // 80% thickness
+                float ds = ray_t_inside_snowflake / iterations;
+                ds = lerp(snowflake_z_thickness, ds, 0.2); // 80% thickness
                 ds = max(ds, 0.01); // Ensure performance by minimum step ?
-                ray = ray * ds * 5.0; // [3, 10] tested and ok.
+                float3 step = ray * ds * 5.0; // [3, 10] tested and ok.
 
                 for (int m = 0; m < iterations; m += 1) {
                     // Related to lobe construction. 
@@ -209,23 +196,23 @@ SubShader {
                     // Iterate back and forth along ray. Not really marching, no SDF.
                     const float zoomed_radius = position_radius * zoom;
                     const float noise = noise2_centered(c3 * (pow(zoomed_radius, seed_data.z) + 0.1) + seed_data.xy); // [-0.5, 0.5]
-                    const float up_biased_noise = lerp(noise, 1.0, abs(result.position.z * (0.2 / snowflake_thickness))); // blend with positive bias, up to 0.2 at |z|=thickness. 0.2 critical.
+                    const float up_biased_noise = lerp(noise, 1.0, abs(result.position.z * (0.2 / snowflake_z_thickness))); // blend with positive bias, up to 0.2 at |z|=thickness. 0.2 critical.
                     const float fill_factor = 0.35; // 0.25 starts making rings, nice up to 1, afterwards it becomes very skinny
                     const float displacement = 
                         max(
-                            zoomed_radius - snowflake_radius - 0.1, // [-snowflake_radius - 0.1, (zoom-1) * snowflake_radius - 0.1]. 0.1 kills outer circle sometimes
+                            zoomed_radius - snowflake_xy_radius - 0.1, // [-snowflake_xy_radius - 0.1, (zoom-1) * snowflake_xy_radius - 0.1]. 0.1 kills outer circle sometimes
                             up_biased_noise // [-0.5, 0.6]
                         )
-                        + (position_radius + c3.x * c3.x) * (fill_factor / snowflake_radius) // pos snowflake_radius + lobe tweak, normalised to [0, 0.35]
+                        + (position_radius + c3.x * c3.x) * (fill_factor / snowflake_xy_radius) // pos snowflake_xy_radius + lobe tweak, normalised to [0, 0.35]
                         - 0.7 * fill_factor;
-                    if (displacement < 0 || abs(result.position.z) > snowflake_thickness + 0.01) {
+                    if (displacement < 0 || abs(result.position.z) > snowflake_z_thickness + 0.01) {
                         break; // Stop if negative or out of bounds
                     }
-                    result.position += ray * displacement;
-                    ray *= 0.99;
+                    result.position += step * displacement;
+                    step *= 0.99;
                 }
-                if (abs(result.position.z) < snowflake_thickness + 0.01) {
-                    result.hit = true;
+                if (abs(result.position.z) < snowflake_z_thickness + 0.01) {
+                    result.valid = true;
                 }
             }
             return result;
@@ -265,7 +252,7 @@ SubShader {
         }
 
         float object_to_world_scale() {
-            return length(float3(unity_ObjectToWorld[0].x, unity_ObjectToWorld[1].x, unity_ObjectToWorld[2].x));
+            return length(unity_ObjectToWorld._m00_m01_m02);
         }
 
         uniform float _Raymarching_Space_Scale;
@@ -394,15 +381,66 @@ SubShader {
 
         ///////////////////////////////////////////////////
 
+
+        uniform float _Raymarching_Geometry_Radius_Scale;
+
+        // Manual baked geometry : 
+        // Using windings CW -> CCW -> CW -> ...
+        static const float3 baked_quad_strips[16 + 8] = {
+            // LOD 0 : inside out box enclosing the cylinder (for DepthLessEqual)
+            // 0 : 3 quad faces -y, +z, +y
+            float3(-1, -1, -1), float3(1, -1, -1),
+            float3(-1, -1, 1), float3(1, -1, 1),
+            float3(-1, 1, 1), float3(1, 1, 1),
+            float3(-1, 1, -1), float3(1, 1, -1),
+            // 1 : 3 quad faces -x, -z, +x
+            float3(-1, -1, 1), float3(-1, 1, 1),
+            float3(-1, -1, -1), float3(-1, 1, -1),
+            float3(1, -1, -1), float3(1, 1, -1),
+            float3(1, -1, 1), float3(1, 1, 1),
+
+            // LOD 1 : quad for both z sides
+            float3(-1, -1, 0), float3(1, -1, 0),
+            float3(-1, 1, 0), float3(1, 1, 0),
+
+            float3(-1, -1, 0), float3(-1, 1, 0),
+            float3(1, -1, 0), float3(1, 1, 0),
+        };
+
+        struct LodIndexes {
+            uint start;
+            uint end;
+        };
+        LodIndexes lod_indexes(uint instance_id) {
+            float3 object_origin_ws = unity_ObjectToWorld._m03_m13_m23; // Translation components https://en.wikibooks.org/wiki/Cg_Programming/Vertex_Transformations
+            #if UNITY_SINGLE_PASS_STEREO
+            float3 camera_origin_ws = 0.5 * (unity_StereoWorldSpaceCameraPos[0] + unity_StereoWorldSpaceCameraPos[1]);
+            #else
+            float3 camera_origin_ws = _WorldSpaceCameraPos;
+            #endif
+            float camera_distance_squared = length_sq(object_origin_ws - camera_origin_ws);
+
+            // Shorten distance due to higher cost, compared to the original
+            float world_distance_lod_transition = 2.5 * object_to_world_scale();
+
+            LodIndexes indexes;
+            if (camera_distance_squared < (world_distance_lod_transition * world_distance_lod_transition)) {
+                indexes.start = instance_id * 8;
+                indexes.end = indexes.start + 8;
+            } else {
+                indexes.start = 16 + instance_id * 4;
+                indexes.end = indexes.start + 4;
+            }
+            return indexes;
+        }
+
         VertexData Vertex (VertexData input) {
             return input;
         }
 
-        uniform float _Raymarching_Geometry_Scale;
-
-        //[instance(nb_geometry_instances)]
-        [maxvertexcount(4)]
-        void Geometry (triangle VertexData input[3], uint snowflake_id : SV_PrimitiveID, /*uint instance_id : SV_GSInstanceID,*/ inout TriangleStream<FragmentData> stream) {
+        [instance(2)]
+        [maxvertexcount(8)]
+        void Geometry (triangle VertexData input[3], uint snowflake_id : SV_PrimitiveID, uint instance_id : SV_GSInstanceID, inout TriangleStream<FragmentData> stream) {
             UNITY_SETUP_INSTANCE_ID(input[0]);
 
             DislocationAnimationConfig config = dislocation_animation_config(input[0]);
@@ -423,8 +461,10 @@ SubShader {
             output.ts_to_ws_1 = ts_to_ws[1];
             output.ts_to_ws_2 = ts_to_ws[2];
 
-            for (uint i = 0; i < 4; i += 1) {
-                float3 vertex_ts = baked_snowflake_plane[i] * _Raymarching_Geometry_Scale;
+            const float3 geometry_scale = float3(_Raymarching_Geometry_Radius_Scale * snowflake_xy_radius * float2(1, 1), snowflake_z_thickness);
+            const LodIndexes indexes = lod_indexes(instance_id);
+            for (uint i = indexes.start; i < indexes.end; i += 1) {
+                float3 vertex_ts = geometry_scale * baked_quad_strips[i];
                 output.geometry_ts = vertex_ts;
                 float3 vertex_ws = mul(ts_to_ws, float4(vertex_ts, 1)).xyz;
                 output.camera_to_geometry_ws = vertex_ws - _WorldSpaceCameraPos;
@@ -444,8 +484,8 @@ SubShader {
             RenderResult result;
             
             const float3 ray_ts = normalize(input.geometry_ts - input.camera_ts);
-            const RaymarchingResult pixel = raycast_snowflake(input.camera_ts, ray_ts, input.seed_data);
-            if (!pixel.hit) { discard; }
+            const MaybePoint pixel = raycast_snowflake(input.camera_ts, ray_ts, input.seed_data);
+            if (!pixel.valid) { discard; }
 
             const float4x4 ts_to_ws = float4x4(
                 input.ts_to_ws_0,
@@ -461,12 +501,13 @@ SubShader {
             const float3 dy_delta = ddy_fine(position_ws);
             const float3 normal_ws = normalize(cross(dx_delta, dy_delta));
             const float3 ray_ws = normalize(input.camera_to_geometry_ws);
+            const float3 reflection_ws = reflect(-ray_ws, normal_ws);
 
             // Lighting
-            const float3 ice_color = float3(0.0, 0.4, 1.0);
+            const half3 ice_color = half3(0.0, 0.4, 1.0);
 
-            half4 background_data = UNITY_SAMPLE_TEXCUBE(unity_SpecCube0, ray_ws);
-            half3 background_color = DecodeHDR (background_data, unity_SpecCube0_HDR);
+            half3 background_color = DecodeHDR (UNITY_SAMPLE_TEXCUBE(unity_SpecCube0, ray_ws), unity_SpecCube0_HDR);
+            half3 reflected_color = DecodeHDR (UNITY_SAMPLE_TEXCUBE(unity_SpecCube0, reflection_ws), unity_SpecCube0_HDR);
 
             // TODO reflection
             
