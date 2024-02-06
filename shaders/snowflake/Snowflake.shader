@@ -1,6 +1,9 @@
 // Render blocs as raymarched snowflakes
 // Adapted from https://www.shadertoy.com/view/Xsd3zf
-// Has some Forward Rendering lighting. No add pass or shadow casting to avoid doing marching too much.
+//
+// Has some Forward Rendering lighting (PBR-ish).
+// No add pass or shadow casting to avoid doing marching more than once.
+// Transparency is faked using skybox ; this should reduce marching calls and overdraw.
 
 Shader "Lereldarion/Replicator/Snowflake" {
 Properties {
@@ -18,6 +21,9 @@ Properties {
     _Replicator_Dislocation_LeftLeg("Dislocation LeftLeg (show_upper_bound, animation_lower_bound, time, _)", Vector) = (1, 1, 0, 0)
 
     [ToggleUI] _Replicator_AudioLink("Enable AudioLink", Float) = 1
+
+    // Internal for lighting
+    [NonModifiableTextureData] _DFG("DFG", 2D) = "white" {}
 }
 
 SubShader {
@@ -41,11 +47,16 @@ SubShader {
         #pragma fragment Fragment
 		#pragma multi_compile_instancing
 		#pragma multi_compile_fwdbase
+        // It seems than fwdbase is restricted to only DIRECTIONAL light.
+        // Making the only light SPOT or POINT has no effect, even when the keywords are forced on (multi_compile_lightpass)
 
         // For avatar only
         #pragma skip_variants DYNAMICLIGHTMAP_ON LIGHTMAP_ON LIGHTMAP_SHADOW_MIXING DIRLIGHTMAP_COMBINED
 
-        #include "UnityCG.cginc"
+        #define UNITY_INSTANCED_SH
+
+        #include "UnityStandardUtils.cginc"
+        #include "Lighting.cginc"
         #pragma target 5.0
 
         #include "Assets/Avatar/replicator_shader/baked_random_values.hlsl"
@@ -62,16 +73,14 @@ SubShader {
 
         struct FragmentData {
             float4 position_cs : SV_POSITION;
-            float3 seed_data : TEXCOORD0;
+            float3 seed_data : SEED_DATA;
 
-            float3 camera_ts : TEXCOORD1;
-            float3 geometry_ts : TEXCOORD2;
+            float3 camera_ts : CAMERA_TS;
+            float3 geometry_ts : VERTEX_TS;
 
-            float4 ts_to_ws_0 : TEXCOORD3;
-            float4 ts_to_ws_1 : TEXCOORD4;
-            float4 ts_to_ws_2 : TEXCOORD5;
-
-            float3 camera_to_geometry_ws : TEXCOORD6;
+            float4 ts_to_ws_0 : TS_TO_WS_0;
+            float4 ts_to_ws_1 : TS_TO_WS_1;
+            float4 ts_to_ws_2 : TS_TO_WS_2;
 
             UNITY_VERTEX_INPUT_INSTANCE_ID
             UNITY_VERTEX_OUTPUT_STEREO
@@ -203,7 +212,7 @@ SubShader {
                             zoomed_radius - snowflake_xy_radius - 0.1, // [-snowflake_xy_radius - 0.1, (zoom-1) * snowflake_xy_radius - 0.1]. 0.1 kills outer circle sometimes
                             up_biased_noise // [-0.5, 0.6]
                         )
-                        + (position_radius + c3.x * c3.x) * (fill_factor / snowflake_xy_radius) // pos snowflake_xy_radius + lobe tweak, normalised to [0, 0.35]
+                        + (position_radius + c3.x * c3.x) * (fill_factor / snowflake_xy_radius) // position radius + lobe tweak, normalised to [0, 0.35]
                         - 0.7 * fill_factor;
                     if (displacement < 0 || abs(result.position.z) > snowflake_z_thickness + 0.01) {
                         break; // Stop if negative or out of bounds
@@ -380,7 +389,159 @@ SubShader {
         }
 
         ///////////////////////////////////////////////////
+        
+        half D_GGX(half NoH, half roughness) {
+            half a = NoH * roughness;
+            half k = roughness / (1.0 - NoH * NoH + a * a);
+            return k * k * (1.0 / UNITY_PI);
+        }
 
+        half V_SmithGGXCorrelated(half NoV, half NoL, half roughness) {
+            half a2 = roughness * roughness;
+            half GGXV = NoL * sqrt(NoV * NoV * (1.0 - a2) + a2);
+            half GGXL = NoV * sqrt(NoL * NoL * (1.0 - a2) + a2);
+            return 0.5 / (GGXV + GGXL);
+        }
+
+        half3 F_Schlick(half u, half3 f0) {
+            return f0 + (1.0 - f0) * pow(1.0 - u, 5.0);
+        }
+
+        half3 F_Schlick(half3 f0, half f90, half VoH) {
+            // Schlick 1994, "An Inexpensive BRDF Model for Physically-Based Rendering"
+            return f0 + (f90 - f0) * pow(1.0 - VoH, 5);
+        }
+
+        half Fd_Burley(half perceptualRoughness, half NoV, half NoL, half LoH) {
+            // Burley 2012, "Physically-Based Shading at Disney"
+            half f90 = 0.5 + 2.0 * perceptualRoughness * LoH * LoH;
+            half lightScatter = F_Schlick(1.0, f90, NoL);
+            half viewScatter = F_Schlick(1.0, f90, NoV);
+            return lightScatter * viewScatter;
+        }
+
+        half3 getBoxProjection(half3 direction, half3 position, half4 cubemapPosition, half3 boxMin, half3 boxMax) {
+            #if defined(UNITY_SPECCUBE_BOX_PROJECTION) && !defined(UNITY_PBS_USE_BRDF2) || defined(FORCE_BOX_PROJECTION)
+            if (cubemapPosition.w > 0) {
+                half3 factors = ((direction > 0 ? boxMax : boxMin) - position) / direction;
+                half scalar = min(min(factors.x, factors.y), factors.z);
+                direction = direction * scalar + (position - cubemapPosition.xyz);
+            }
+            #endif
+
+            return direction;
+        }
+
+        half3 EnvBRDFMultiscatter(half2 dfg, half3 f0) {
+            return lerp(dfg.xxx, dfg.yyy, f0);
+        }
+
+        half computeSpecularAO(half NoV, half ao, half roughness) {
+            return clamp(pow(NoV + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao, 0.0, 1.0);
+        }
+
+        UNITY_DECLARE_TEX2D(_DFG);
+
+        half3 compute_color(half3 position_ws, half3 normal_ws) {
+            // Ice config
+            const half3 ice_albedo = half3(0.8, 0.8, 1); //half3(0, 0.4, 1.0);
+            const half ice_metallicity = 0;
+            const half ice_roughness = 0.05;
+            const half occlusion = 1;
+
+            const half3 ray_ws = normalize(position_ws - _WorldSpaceCameraPos);
+
+            // Imported orels ligthing code
+            half3 worldSpaceViewDir = -ray_ws;
+
+            half reflectance = 0.5;
+            half3 f0 = 0.16 * reflectance * reflectance * (1 - ice_metallicity) + ice_albedo * ice_metallicity;
+            half3 indirectDiffuse = 1;
+            half3 indirectSpecular = 0;
+            half3 directSpecular = 0;
+            half perceptualRoughness = ice_roughness;
+
+            #ifndef USING_DIRECTIONAL_LIGHT
+            fixed3 lightDir = normalize(UnityWorldSpaceLightDir(position_ws));
+            #else
+            fixed3 lightDir = _WorldSpaceLightPos0.xyz;
+            #endif
+
+            half3 lightHalfVector = Unity_SafeNormalize(lightDir + worldSpaceViewDir);
+            half lightNoL = saturate(dot(normal_ws, lightDir));
+            half lightLoH = saturate(dot(lightDir, lightHalfVector));
+
+            half NoV = abs(dot(normal_ws, worldSpaceViewDir)) + 1e-5;
+            half3 pixelLight = lightNoL * _LightColor0.rgb * Fd_Burley(perceptualRoughness, NoV, lightNoL, lightLoH);
+
+            #if UNITY_LIGHT_PROBE_PROXY_VOLUME
+                UNITY_BRANCH
+                if (unity_ProbeVolumeParams.x == 1) {
+                    indirectDiffuse = SHEvalLinearL0L1_SampleProbeVolume(half4(normal_ws, 1), position_ws);
+                } else {
+                    // Mesh has BlendProbes instead of LPPV
+                    indirectDiffuse = max(0, ShadeSH9(half4(normal_ws, 1)));   
+                }
+            #else // No LPPVs enabled project-wide
+                indirectDiffuse = max(0, ShadeSH9(half4(normal_ws, 1)));   
+            #endif
+
+            half3 dfguv = half3(NoV, perceptualRoughness, 0);
+            half2 dfg = UNITY_SAMPLE_TEX2D(_DFG, dfguv).xy;
+            half3 energyCompensation = 1.0 + f0 * (1.0 / dfg.y - 1.0);
+
+            half rough = perceptualRoughness * perceptualRoughness;
+            half clampedRoughness = max(rough, 0.002);
+
+            #if !defined(SPECULAR_HIGHLIGHTS_OFF) && defined(USING_LIGHT_MULTI_COMPILE)
+                half NoH = saturate(dot(normal_ws, lightHalfVector));
+                half3 F = F_Schlick(lightLoH, f0);
+                half D = D_GGX(NoH, clampedRoughness);
+                half V = V_SmithGGXCorrelated(NoV, lightNoL, clampedRoughness);
+
+                F *= energyCompensation;
+
+                directSpecular = max(0, D * V * F) * pixelLight * UNITY_PI;
+            #endif
+
+            half3 fresnel = F_Schlick(NoV, f0);
+
+            half3 reflDir = reflect(-worldSpaceViewDir, normal_ws);
+            reflDir = lerp(reflDir, normal_ws, clampedRoughness);
+
+            Unity_GlossyEnvironmentData envData;
+            envData.roughness = perceptualRoughness;
+            envData.reflUVW = getBoxProjection(reflDir, position_ws, unity_SpecCube0_ProbePosition, unity_SpecCube0_BoxMin.xyz, unity_SpecCube0_BoxMax.xyz);
+
+            indirectSpecular = Unity_GlossyEnvironment(UNITY_PASS_TEXCUBE(unity_SpecCube0), unity_SpecCube0_HDR, envData);
+
+            half horizon = min(1 + dot(reflDir, normal_ws), 1);
+            indirectSpecular *= horizon * horizon;
+
+            const half _SpecOcclusion = 0.75;
+            half specularOcclusion = saturate(length(indirectDiffuse) * (1.0 / _SpecOcclusion));
+            dfg.x *= specularOcclusion;
+            specularOcclusion = computeSpecularAO(NoV, occlusion, clampedRoughness);
+
+            indirectSpecular *= specularOcclusion * EnvBRDFMultiscatter(dfg, f0);
+
+            half3 lit_color = ice_albedo * (1 - ice_metallicity) * (indirectDiffuse * occlusion + pixelLight) + indirectSpecular + directSpecular;
+
+            // Apply "transparency" and some emission
+            half3 background = DecodeHDR (UNITY_SAMPLE_TEXCUBE(unity_SpecCube0, ray_ws), unity_SpecCube0_HDR);
+            return lerp(lit_color, background, NoV);
+
+            // Old
+            /*const half3 ray_ws = normalize(position_ws - _WorldSpaceCameraPos);
+            half3 background_color = DecodeHDR (UNITY_SAMPLE_TEXCUBE(unity_SpecCube0, ray_ws), unity_SpecCube0_HDR);
+            float abs_dot_normal_ray = abs(dot(normal_ws, ray_ws));
+            float diffuse_ambient = pow(abs(dot(normal_ws, _WorldSpaceLightPos0.xyz)), 3.0);
+            half3 cf = lerp(ice_albedo, background_color, abs_dot_normal_ray);
+            cf = lerp(cf, 2, diffuse_ambient);
+            return lerp(background_color, cf, (0.5 + abs_dot_normal_ray * 0.5));*/
+        }
+        
+        ///////////////////////////////////////////////////
 
         uniform float _Raymarching_Geometry_Radius_Scale;
 
@@ -453,6 +614,7 @@ SubShader {
             const float4x4 ts_to_ws = mul(unity_ObjectToWorld, ts_to_os);
 
             FragmentData output;
+            UNITY_INITIALIZE_OUTPUT(FragmentData, output);
             UNITY_TRANSFER_INSTANCE_ID(input[0], output);
             UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
             output.seed_data = make_seed_data(snowflake_id);
@@ -466,9 +628,7 @@ SubShader {
             for (uint i = indexes.start; i < indexes.end; i += 1) {
                 float3 vertex_ts = geometry_scale * baked_quad_strips[i];
                 output.geometry_ts = vertex_ts;
-                float3 vertex_ws = mul(ts_to_ws, float4(vertex_ts, 1)).xyz;
-                output.camera_to_geometry_ws = vertex_ws - _WorldSpaceCameraPos;
-                output.position_cs = mul(UNITY_MATRIX_VP, float4(vertex_ws, 1));
+                output.position_cs = mul(UNITY_MATRIX_VP, mul(ts_to_ws, float4(vertex_ts, 1)));
                 stream.Append(output);
             }
         }
@@ -499,28 +659,14 @@ SubShader {
             const float3 position_ws = mul(ts_to_ws, float4(pixel.position, 1)).xyz;
             const float3 dx_delta = ddx_fine(position_ws);
             const float3 dy_delta = ddy_fine(position_ws);
-            const float3 normal_ws = normalize(cross(dx_delta, dy_delta));
-            const float3 ray_ws = normalize(input.camera_to_geometry_ws);
-            const float3 reflection_ws = reflect(-ray_ws, normal_ws);
+            const float3 normal_ws = normalize(cross(dy_delta, dx_delta)); // Looks good, checked with debug shading
 
             // Lighting
-            const half3 ice_color = half3(0.0, 0.4, 1.0);
-
-            half3 background_color = DecodeHDR (UNITY_SAMPLE_TEXCUBE(unity_SpecCube0, ray_ws), unity_SpecCube0_HDR);
-            half3 reflected_color = DecodeHDR (UNITY_SAMPLE_TEXCUBE(unity_SpecCube0, reflection_ws), unity_SpecCube0_HDR);
-
-            // TODO reflection
-            
-            float abs_dot_normal_ray = abs(dot(normal_ws, ray_ws));
-            float diffuse_ambient = pow(abs(dot(normal_ws, _WorldSpaceLightPos0.xyz)), 3.0);
-            half3 cf = lerp(ice_color, background_color, abs_dot_normal_ray);
-            cf = lerp(cf, 2, diffuse_ambient);
-            half3 final_color = lerp(background_color, cf, (0.5 + abs_dot_normal_ray * 0.5));
-            result.color = half4(final_color, 1);
+            result.color = half4(compute_color(position_ws, normal_ws), 1);
 
             // Depth
-            const float4 position_cs = mul(UNITY_MATRIX_VP, float4(position_ws, 1));
-            result.depth = position_cs.z / position_cs.w;
+            const float4 pos = mul(UNITY_MATRIX_VP, float4(position_ws, 1));
+            result.depth = pos.z / pos.w;
             return result;
         }
         ENDCG
