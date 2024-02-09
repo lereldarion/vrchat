@@ -1,13 +1,38 @@
 ﻿#if UNITY_EDITOR
 using System.Linq;
-using System.Text.RegularExpressions;
 using UnityEngine;
 using UnityEditor;
 using VRC.SDK3.Dynamics.Contact.Components;
 
+[assembly: nadena.dev.ndmf.ExportsPlugin(typeof(Lereldarion.ReplicatorConfigureAvatarPlugin))]
+
 namespace Lereldarion {
-    public class ReplicatorSetDislocationUVs : MonoBehaviour
-    {
+    // Hook to GUI
+    [CustomEditor(typeof(ReplicatorConfigureAvatar), true)]
+    public class ReplicatorConfigureAvatar_Editor : Editor {
+        public override void OnInspectorGUI() {
+            var component = (ReplicatorConfigureAvatar) target;
+            DrawDefaultInspector();
+            if (GUILayout.Button("Configure")) { component.ConfigureAvatar(); }
+        }
+    }
+
+    // Hook to ndmf for auto launch
+    public class ReplicatorConfigureAvatarPlugin : nadena.dev.ndmf.Plugin<ReplicatorConfigureAvatarPlugin> {
+        public override string DisplayName => "Configure Replicator Avatar : set Mesh UVs metadata for dislocation";
+
+        protected override void Configure() {
+            InPhase(nadena.dev.ndmf.BuildPhase.Generating).Run("Configure Replicator Avatar Mesh", ctx => {
+                var component = ctx.AvatarRootObject.GetComponentInChildren<ReplicatorConfigureAvatar>(true);
+                if (component != null) {
+                    component.ConfigureAvatar();
+                }
+            });
+        }
+    }
+
+    public class ReplicatorConfigureAvatar : MonoBehaviour, VRC.SDKBase.IEditorOnly {
+        // Component Fields
         public SkinnedMeshRenderer main_mesh;
 
         [Header("Spatial coordinates")]
@@ -25,23 +50,23 @@ namespace Lereldarion {
         public Transform shield;
         public Transform right_arm_root;
         public VRCContactReceiver right_arm_proximity;
-    }
+        public Transform left_leg_root;
+        public VRCContactReceiver left_leg_proximity;
 
-    [CustomEditor(typeof(ReplicatorSetDislocationUVs), true)]
-    public class ReplicatorSetDislocationUVs_Editor : Editor {
-
+        /////////////////////////////////////////////////////////////
+        
         private enum Role {
             None,
             DynamicElement, // relocatable elements
             LeftArm,
             RightArm,
+            LeftLeg,
         }
-        private void SetUVs() {
-            var editor = (ReplicatorSetDislocationUVs) target;
 
+        public void ConfigureAvatar() {
             // Using the raw mesh + transforms
-            Mesh mesh = editor.main_mesh.sharedMesh;
-            Role[] roles = identify_vertice_roles(editor);
+            Mesh mesh = this.main_mesh.sharedMesh;
+            Role[] roles = this.identify_vertice_roles();
             Vector3[] vertice_triangle_barycenters = compute_vertice_triangle_barycenters(mesh);
             
             // Uv maps
@@ -53,9 +78,9 @@ namespace Lereldarion {
             //   Offset is defined as a positive delay, with 0 as minimum at maximum distance from bottom.
             //   Using L1 distance from bottom.
             // - Normalized distance from cristal "core", in [0,1]
-            Vector3 bottom_l1_distance_origin = editor.main_mesh.transform.InverseTransformPoint(editor.bottom_l1_distance_origin.position);
-            Vector3 core_distance_01_origin = editor.main_mesh.transform.InverseTransformPoint(editor.core_distance_01_origin.position);
-            Vector3 extremity_position_override_os = editor.main_mesh.transform.InverseTransformPoint(editor.override_position.position);
+            Vector3 bottom_l1_distance_origin = this.main_mesh.transform.InverseTransformPoint(this.bottom_l1_distance_origin.position);
+            Vector3 core_distance_01_origin = this.main_mesh.transform.InverseTransformPoint(this.core_distance_01_origin.position);
+            Vector3 extremity_position_override_os = this.main_mesh.transform.InverseTransformPoint(this.override_position.position);
 
             float[] bottom_l1_distances = new float[mesh.vertexCount];
             float[] core_l2_distances = new float[mesh.vertexCount];
@@ -78,16 +103,21 @@ namespace Lereldarion {
 
             // Arms : compute a limb_linear_distance scaled & centered to the proximity contact, with -1 towards spine and +1 towards fingers.
             // Easy only because model is in strict T-pose, we can project on an axis
-            var left_arm_config = new ArmConfiguration(editor.left_arm_proximity, editor.main_mesh.transform);
-            var right_arm_config = new ArmConfiguration(editor.right_arm_proximity, editor.main_mesh.transform);
+            var left_arm_referential = new LimbAxisReferential(this.left_arm_proximity, this.main_mesh.transform);
+            var right_arm_referential = new LimbAxisReferential(this.right_arm_proximity, this.main_mesh.transform);
+            var left_leg_referential = new LimbAxisReferential(this.left_leg_proximity, this.main_mesh.transform);
             for (int i = 0; i < mesh.vertexCount; i += 1) {
                 if (roles[i] == Role.LeftArm) {
                     uv2[i].x = (float) Role.LeftArm;
-                    uv2[i].y = left_arm_config.AxisProjectionScaled(vertice_triangle_barycenters[i]);
+                    uv2[i].y = left_arm_referential.axis_coordinate(vertice_triangle_barycenters[i]);
                 }
                 if (roles[i] == Role.RightArm) {
                     uv2[i].x = (float) Role.RightArm;
-                    uv2[i].y = right_arm_config.AxisProjectionScaled(vertice_triangle_barycenters[i]);
+                    uv2[i].y = right_arm_referential.axis_coordinate(vertice_triangle_barycenters[i]);
+                }
+                if (roles[i] == Role.LeftLeg) {
+                    uv2[i].x = (float) Role.LeftLeg;
+                    uv2[i].y = left_leg_referential.axis_coordinate(vertice_triangle_barycenters[i]);
                 }
             }
             Debug.Log($"LeftArm min={uv2.Where(uv => uv.x == (float) Role.LeftArm).Select(uv => uv.y).Min()} max={uv2.Where(uv => uv.x == (float) Role.LeftArm).Select(uv => uv.y).Max()}");
@@ -100,10 +130,10 @@ namespace Lereldarion {
             return Mathf.Abs(v.x) + Mathf.Abs(v.y) + Mathf.Abs(v.z);
         }
 
-        static private Role[] identify_vertice_roles(ReplicatorSetDislocationUVs editor) {
+        private Role[] identify_vertice_roles() {
             // https://docs.unity3d.com/ScriptReference/Mesh.GetAllBoneWeights.html
-            Mesh mesh = editor.main_mesh.sharedMesh;
-            Transform[] bones = editor.main_mesh.bones;
+            Mesh mesh = this.main_mesh.sharedMesh;
+            Transform[] bones = this.main_mesh.bones;
             var bone_per_vertex = mesh.GetBonesPerVertex();
             var bone_weights = mesh.GetAllBoneWeights();
             
@@ -117,19 +147,22 @@ namespace Lereldarion {
                 for (; bone_weight_iterator < iterator_end; bone_weight_iterator += 1) {
                     if (role != Role.None) { continue; } // Already assigned
                     Transform bone = bones[bone_weights[bone_weight_iterator].boneIndex];
-                    if (editor.dynamic_element_roots.Any(root => bone.IsChildOf(root))) {
+                    if (this.dynamic_element_roots.Any(root => bone.IsChildOf(root))) {
                         role = Role.DynamicElement;
-                    } else if (bone.IsChildOf(editor.shield)) {
+                    } else if (bone.IsChildOf(this.shield)) {
                         role = Role.LeftArm; // Always attached to left arm, no need to isolate it for dislocation
-                    } else if (bone.IsChildOf(editor.left_arm_root)) {
+                    } else if (bone.IsChildOf(this.left_arm_root)) {
                         role = Role.LeftArm;
-                    } else if (bone.IsChildOf(editor.right_arm_root)) {
+                    } else if (bone.IsChildOf(this.right_arm_root)) {
                         role = Role.RightArm;
+                    } else if (bone.IsChildOf(this.left_leg_root)) {
+                        role = Role.LeftLeg;
                     }
                 }
                 roles[vertex_id] = role;
             }
-            Debug.Log($"Role vertex counts: dynamic = {roles.Where(r => r == Role.DynamicElement).Count()}, left arm = {roles.Where(r => r == Role.LeftArm).Count()}");
+            var vertex_counts = roles.GroupBy(role => role).ToDictionary(group => group.Key, group => group.Count());
+            Debug.Log($"Role vertex counts: {string.Join(", ", vertex_counts.ToArray())}");
             return roles;
         }
 
@@ -153,12 +186,12 @@ namespace Lereldarion {
             return vertice_triangle_barycenters;
         }
 
-        private struct ArmConfiguration {
+        private struct LimbAxisReferential {
             private Vector3 origin_os;
             private Vector3 axis_os;
             private float scale_factor;
 
-            public ArmConfiguration(VRCContactReceiver proximity, Transform mesh_transform) {
+            public LimbAxisReferential(VRCContactReceiver proximity, Transform mesh_transform) {
                 Debug.Assert(proximity.shapeType == VRCContactReceiver.ShapeType.Sphere);
                 Debug.Assert(proximity.receiverType == VRCContactReceiver.ReceiverType.Proximity);
 
@@ -171,17 +204,12 @@ namespace Lereldarion {
                 scale_factor = axis_radius_os.magnitude;
             }
 
-            public float AxisProjectionScaled(Vector3 position_os) {
+            public float axis_coordinate(Vector3 position_os) {
                 float r = Vector3.Dot(axis_os, position_os - origin_os) / scale_factor;
                 Debug.Assert(-1f <= r && r <= 1f);
                 return r;
             }
         };
-
-        public override void OnInspectorGUI() {
-            DrawDefaultInspector();
-            if (GUILayout.Button("Set UV")) { SetUVs(); }
-        }
     }
 }
 #endif

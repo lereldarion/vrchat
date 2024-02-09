@@ -6,7 +6,6 @@ using UnityEditor;
 using System.IO;
 using System.Globalization;
 using System;
-using UnityEngine.Assertions;
 
 // Embed simple skinning and bone rotation animations into a shader, driven by time.
 // Requires a skinned mesh prefab to extract armature data, and an animation on transforms to extract angle curves from.
@@ -22,18 +21,43 @@ using UnityEngine.Assertions;
 // During animation, use simple lerp between successive sample points. If not smooth just add more points.
 // Encoding the splines themselves would use less memory but require finding keyframes at less predictable timestamps ; not worth it.
 
+[assembly: nadena.dev.ndmf.ExportsPlugin(typeof(Lereldarion.ReplicatorConfigurePetPlugin))]
+
 namespace Lereldarion {
-    public class ReplicatorConfigurePet : MonoBehaviour
+    // Hook to GUI
+    [CustomEditor(typeof(ReplicatorConfigurePet), true)]
+    public class ReplicatorConfigurePet_Editor : Editor {
+        public override void OnInspectorGUI() {
+            var component = (ReplicatorConfigurePet) target;
+            DrawDefaultInspector();
+            if (GUILayout.Button("Configure")) { component.ConfigurePet(); }
+        }
+    }
+
+    // Hook to ndmf for auto launch
+    public class ReplicatorConfigurePetPlugin : nadena.dev.ndmf.Plugin<ReplicatorConfigurePetPlugin> {
+        public override string DisplayName => "Configure Replicator Pet : set Mesh UVs and Shader baked data";
+
+        protected override void Configure() {
+            InPhase(nadena.dev.ndmf.BuildPhase.Generating).Run("Configure Replicator Pet", ctx => {
+                var component = ctx.AvatarRootObject.GetComponentInChildren<ReplicatorConfigurePet>(true);
+                if (component != null) {
+                    component.ConfigurePet();
+                }
+            });
+        }
+    }
+
+    public class ReplicatorConfigurePet : MonoBehaviour, VRC.SDKBase.IEditorOnly
     {
-        public SkinnedMeshRenderer pet_mesh;
+        // Component fields
+        public SkinnedMeshRenderer skinned_renderer;
         public AnimationClip walking_clip;
         [Range(1f, 60f)]
         public float samples_per_second;
         public AnimationClip cower_clip;
-    }
 
-    [CustomEditor(typeof(ReplicatorConfigurePet), true)]
-    public class ReplicatorConfigurePet_Editor : Editor {
+        ///////////////////////////////////////////
         
         private enum Axis { X, Y, Z }
         static private readonly Dictionary<string, Axis> rotation_axis_property_names = new Dictionary<string, Axis>{
@@ -56,14 +80,12 @@ namespace Lereldarion {
             {"FrontLeg3", new[]{Axis.Z}},
         };
 
-        private void Configure() {
-            var editor = (ReplicatorConfigurePet) target;
-
-            BoneScanResult armature = scan_bones(editor.pet_mesh);
-            float[] distances_core_01 = compute_distance_core_01(editor.pet_mesh);
-            copy_bone_id_and_core_distances_to_uv1(editor.pet_mesh, armature.bone_id_for_name, distances_core_01);
-            var walking = generate_walking_animation_sample_table(editor.walking_clip, editor.samples_per_second, armature);
-            var cower_rotations = extract_cower_rotations(editor.cower_clip, armature);
+        public void ConfigurePet() {
+            BoneScanResult armature = scan_bones(this.skinned_renderer);
+            float[] distances_core_01 = compute_distance_core_01(this.skinned_renderer);
+            copy_bone_id_and_core_distances_to_uv1(this.skinned_renderer, armature.bone_id_for_name, distances_core_01);
+            var walking = generate_walking_animation_sample_table(this.walking_clip, this.samples_per_second, armature);
+            var cower_rotations = extract_cower_rotations(this.cower_clip, armature);
 
             string shader_data_path = $"{Application.dataPath}/Avatar/pet/pet_data.orlsource"; // hlsl fragment with extra tags
             using (StreamWriter writer = File.CreateText(shader_data_path)) {
@@ -91,7 +113,7 @@ namespace Lereldarion {
                 writer.WriteLine();
                 writer.WriteLine("// Animation curves");
                 writer.WriteLine($"static const int walking_animation_sample_count = {walking.sample_count};");
-                writer.WriteLine($"static const float walking_animation_sample_interval = {to_string_f(editor.walking_clip.length / walking.sample_count)};");
+                writer.WriteLine($"static const float walking_animation_sample_interval = {to_string_f(this.walking_clip.length / walking.sample_count)};");
                 writer.WriteLine($"static const float walking_animation_samples[{walking.sample_count + 1}][{armature.rotation_table.Count}] = {{");
                 for (int s = 0; s <= walking.sample_count; s += 1) {
                     // write 1 more sample line, equal to first, to prevent another modulo in shader
@@ -134,7 +156,7 @@ namespace Lereldarion {
                 bone_axis_to_rotation_id_and_rest_value = new Dictionary<(string, Axis), (int, float)>();
             }
         }
-        private BoneScanResult scan_bones(SkinnedMeshRenderer renderer) {
+        static private BoneScanResult scan_bones(SkinnedMeshRenderer renderer) {
             BoneScanResult result = new BoneScanResult();
             void scan(Transform bone) {
                 // Identify bone by name. Ignore side prefix ; table applies to both sides.
@@ -332,10 +354,6 @@ namespace Lereldarion {
             return triangle_barycenter_os.Select(pos => Vector3.Distance(pos, center_os) / max_distance).ToArray();
         }
 
-        public override void OnInspectorGUI() {
-            DrawDefaultInspector();
-            if (GUILayout.Button("Configure")) { Configure(); }
-        }
     }
 }
 #endif

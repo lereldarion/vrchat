@@ -191,7 +191,7 @@ Shader "Lereldarion/Replicator/Prototype"
                 ts_to_ws._m03_m13_m23 += xyz * t + 0.5 * gravity * t * t;
             }
 
-            #include "geometry_baked_data.hlsl"
+            #include "baked_geometry_data.hlsl"
 
             [instance(nb_geometry_instances)]
             [maxvertexcount(nb_vertices_per_geometry_instance)]

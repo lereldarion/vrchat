@@ -2,30 +2,53 @@
 
 %Properties()
 {
+    UI_MainHeader("# Main Settings", Int) = 1
+    _MainTex("Albedo for fallback", 2D) =  "white" { }
+    [Normal, NoScaleOffset] _BumpMap("Normal Map >", 2D) =  "bump" { }
+
     UI_ReplicatorGraphics("# Replicator Graphics", Int) = 1
     // Replaces masks with constants for only what we use
     _Replicator_MainColor("PBR albedo (override)", Color) = (1, 1, 1, 1)
     _Replicator_Packed_Tex("R=AO, G=roughness, B=audiolink track", 2D) = "white" {}
-    [Toggle] _Replicator_AudioLink("Enable AudioLink", Float) = 1
+    [ToggleUI] _Replicator_AudioLink("Enable AudioLink", Float) = 1
 }
 
 %Template("/Assets/Avatar/replicator_shader/template")
 
+// Projector use the unexpanded geometry
+%ShaderTags()
+{
+    "RenderType" = "Opaque"
+    "Queue" = "Geometry"
+    "VRCFallback" = "ToonCutoutDoubleSided"
+    "IgnoreProjector" = "True"
+}
+
+// cnlohr: should not be useful for Avatars
+%ShaderFeatures()
+{
+    #pragma skip_variants DYNAMICLIGHTMAP_ON LIGHTMAP_ON LIGHTMAP_SHADOW_MIXING DIRLIGHTMAP_COMBINED
+}
+
 %Includes()
 {
-    "@/Shaders/ORL Standard",
     "@/Modules/Audiolink",
-    "/Assets/Avatar/replicator_shader/geometry_baked_data",
+    "@/Modules/LTCGI",
     "self"
 }
 
-%ShaderTags()
-{
-    "VRCFallback" = "ToonCutoutDoubleSided"
+
+%Variables()
+{    
+    half4 _Replicator_MainColor;
+    bool _Replicator_AudioLink;
 }
 
 %LibraryFunctions()
 {
+    #include "Assets/Avatar/replicator_shader/baked_random_values.hlsl"
+    #include "Assets/Avatar/replicator_shader/baked_geometry_data.hlsl"
+    
     float length_squared(float3 v) { return dot(v, v); }
     float distance_squared(float3 lhs, float3 rhs) { return length_squared(rhs - lhs); }
 
@@ -51,7 +74,7 @@
 %GeometryDefinitions()
 {
     float object_to_world_scale() {
-        return length(float3(unity_ObjectToWorld[0].x, unity_ObjectToWorld[1].x, unity_ObjectToWorld[2].x));
+        return length(unity_ObjectToWorld._m00_m10_m20); // x vector in ws
     }
     
     uint lod_level() {
@@ -69,8 +92,10 @@
         return camera_distance_squared < (world_distance_lod_transition * world_distance_lod_transition) ? 0 : 1;
     }
 
+    // Generate a random float4(float3 vector + float)
     float4 random_float3_float(uint id) {
-        // Generate a random float4(float3 vector + float) : pick from table + add some noise
+        // Pick from table with variation in time
+        id += (uint) _Time.x; // time/20, change patterns every 20 sec
         float4 v = baked_random_constants[id % nb_baked_random_constants];
         // Add more variety by reusing the vector with swapped axis ; again use mod 2^n
         UNITY_FLATTEN switch((id / nb_baked_random_constants) % 4) {
@@ -116,21 +141,38 @@
         float time;
     };
 
-    // Audiolink rumble of blocks https://github.com/llealloo/vrc-udon-audio-link/tree/master/Docs
-    float audiolink_bass_dislocation_time(VertexData v) {
+    // Audiolink : https://github.com/llealloo/vrc-udon-audio-link/tree/master/Docs
+    // bass : rumble of blocs using the dislocation animation
+    // mids : emission along the blocks
+    struct TriangleAudioLink {
+        float bass_dislocation_time;
+        float smoothed_track_threshold_01;
+    };
+    TriangleAudioLink triangle_audiolink(VertexData v) {
+        TriangleAudioLink result;
+        result.bass_dislocation_time = 0;
+        result.smoothed_track_threshold_01 = 0;
+
         if (!(_Replicator_AudioLink && AudioLinkIsAvailable())) {
-            return 0;
+            return result;
         }
 
-        float history_01 = v.uv1.y; // Defined on avatar and pet as 01 from core to extremities.
+        const float history_01 = v.uv1.y; // Defined on avatar and pet as 01 from core to extremities.
+
+        // Bass rumble
         float bass_01 = AudioLinkLerp(ALPASS_AUDIOBASS + float2(history_01 * AUDIOLINK_WIDTH, 0)).r;
-
-        // Ignore low spikes using smoothed threshold 
         float smoothed_bass_level_01 = AudioLinkData(ALPASS_FILTEREDAUDIOLINK + int2(0 /*smoothing*/, 0 /*bass*/));
-        float animation_scale = bass_01 > smoothed_bass_level_01 ? bass_01 : 0;
-
+        float animation_scale = bass_01 > smoothed_bass_level_01 ? bass_01 : 0; // Ignore low spikes using smoothed threshold 
         float max_animation_time = 0.01;
-        return bass_01 * max_animation_time;
+        result.bass_dislocation_time = bass_01 * max_animation_time;
+
+        // high mids [0, 0.999] threshold
+        float highmids_01 = AudioLinkLerp(ALPASS_AUDIOHIGHMIDS + float2(history_01 * AUDIOLINK_WIDTH, 0)).r;
+        float smoothed_highmids_01 = AudioLinkData(ALPASS_FILTEREDAUDIOLINK + int2(0 /*smoothing*/, 2 /*highmids*/)).r;
+        float threshold_01 = (highmids_01 - smoothed_highmids_01) / (1.02 - smoothed_highmids_01); // Remaps above average part of signal to [0,1]
+        result.smoothed_track_threshold_01 = threshold_01;
+
+        return result;
     }
 
     // random_vec used as float4(xyz = translation speed (m/s WS) + rotation axis (TS), w = rotation speed in rad/s)
@@ -163,7 +205,8 @@
         DislocationAnimationConfig config = dislocation_animation_config(input[0]);
         if (!config.show) { return; }
 
-        config.time += audiolink_bass_dislocation_time(input[0]);
+        const TriangleAudioLink audiolink = triangle_audiolink(input[0]);
+        config.time += audiolink.bass_dislocation_time;
 
         float4x4 ts_to_os = ts_to_os_from_triangle_position_manual(input);
         animate_ts_to_os(ts_to_os, random_float3_float(block_id), config.time);
@@ -183,20 +226,18 @@
             v.normal = normalize(mul((float3x3) ts_to_os, baked.normal_ts));
             v.tangent.xyz = mul((float3x3) ts_to_os, baked.tangent_ts); // Renormalized afterwards
             v.uv0 = baked.uv0;
+            v.uv1.x = audiolink.smoothed_track_threshold_01;
             // Use real Vertex stage from orels
             stream.Append(Vertex(v));
         }
     }
 }
 
-%Variables()
-{
-    half4 _Replicator_MainColor;
-    bool _Replicator_AudioLink;
-}
-
 %Textures()
 {
+    TEXTURE2D(_BumpMap);
+    SAMPLER(sampler_BumpMap);
+
     TEXTURE2D(_Replicator_Packed_Tex);
     SAMPLER(sampler_Replicator_Packed_Tex);
 }
@@ -206,6 +247,9 @@
     void ReplicatorPbrFragment(MeshData d, inout SurfaceData o) {
         // This overrides the _MainTex, so it can be used solely for fallback rendering
         o.Albedo = _Replicator_MainColor.rgb;
+
+        half4 normalTex = SAMPLE_TEXTURE2D(_BumpMap, sampler_BumpMap, d.uv0.xy);
+        o.Normal = UnpackScaleNormal(normalTex, 1 /*_BumpScale*/);
 
         // Use custom packed texture with only non constant values. Having true constants helps the compiler.
         half4 packed = SAMPLE_TEXTURE2D(_Replicator_Packed_Tex, sampler_Replicator_Packed_Tex, d.uv0.xy);
@@ -218,15 +262,11 @@
         o.Occlusion = ao;
         o.Alpha = 1.;
 
-        if (_Replicator_AudioLink && AudioLinkIsAvailable()) {
-            float history_01 = d.uv1.y;
-            float3 color = AudioLinkData(ALPASS_THEME_COLOR0).rgb;
-            float level_01 = AudioLinkLerp(ALPASS_AUDIOHIGHMIDS + float2(history_01 * AUDIOLINK_WIDTH, 0)).r;
-            float smoothed_level_01 = AudioLinkData(ALPASS_FILTEREDAUDIOLINK + int2(0 /*smoothing*/, 2 /*highmids*/)).r;
-            float threshold_01 = (level_01 - smoothed_level_01) / (1.02 - smoothed_level_01); // Remaps above average part of signal to [0,1]
-            if (threshold_01 > audiolink_track) {
-                o.Emission += color;
-            }
+        // Audiolink, precomputed in Geometry. Avoids a branch and texture fetches.
+        half threshold_01 = d.uv1.x;
+        float3 emission_color = AudioLinkData(ALPASS_THEME_COLOR0).rgb;
+        if (threshold_01 > audiolink_track) {
+            o.Emission += emission_color;
         }
     }
 }
