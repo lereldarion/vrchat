@@ -4,7 +4,8 @@ Some basic explanations, but this is incomplete (no mesh, texture, unity object 
 ## Geometry compression using geometry pass
 Each triangle in the base mesh is dynamically expanded to a replicator block by the shader.
 - `generate_shader_code.py` : Generate the HLSL tables of vertex data constants, from blender meshes (the anchor triangle, and blocks for LOD0 and LOD1).
-- `geometry_baked_data.{hlsl,orlsource}` : Vertex data that is generated.
+- `baked_geometry_data.hlsl` : Vertex data that is generated.
+- `baked_random_values.hlsl` : set of random values to sample from.
 - `prototype.shader` : Simple version of the geometry pass expansion code, with debug shading. Uses the vertex data.
 
 ## Orels integration
@@ -14,7 +15,7 @@ Each triangle in the base mesh is dynamically expanded to a replicator block by 
 ## Dislocation
 Procedural dislocation that can be triggered by contact points, to cut the arms using a sword
 - Arm dislocation uses a distance contact at the elbow to detect the cut point, with a capsule on each side to determine the side.
-`ReplicatorSetDislocationUVs.cs` computes a `[-1, 1]` coordinate along each arm, and stores it in UVs.
+`ReplicatorConfigureAvatar.cs` computes a `[-1, 1]` coordinate along each arm, and stores it in UVs.
 - Global dislocation uses a delay from top to bottom to be progressive, computed by the same script and stored in UVs too.
 - Dislocation animation is a rotation + worldspace block displacement (`d(t) = v_init t + (0, 0, -0.5g) t^2`). `v_init` comes from a table of random vectors.
 - `avatar.orlshader` : package for the avatar ; defines dislocation modes.
