@@ -1,9 +1,11 @@
-﻿// Animated shield "energy" effect, using mostly a transparent emission disk.
-// Intended usage is on a circle inscribed in a quad with UVs in [0,1]^2
+﻿// Animated "energy" effect, transparent emission moving in waves.
 // Adapted from https://www.shadertoy.com/view/tslSDX, with few modifications (move to HLSL, removal of ring, coloring)
-Shader "Lereldarion/EnergyShieldSurface" {
+//
+// Intended usage is on a circle inscribed in a quad with UVs in [0,1]^2 FIXME use uvs
+Shader "Lereldarion/EnergySurface" {
     Properties {
-        _Falloff_Radius ("Falloff radius", Range (0, 0.5)) = 0.5
+        _Deploy_Shield ("Deploy Shield 0->1", Range (0, 1)) = 1
+        _Deploy_Tools ("Deploy Tools 0->1", Range (0, 1)) = 1
 		_NoiseMap ("Noise texture", 2D) = "white" {}
     }
     SubShader {
@@ -13,7 +15,6 @@ Shader "Lereldarion/EnergyShieldSurface" {
             "VRCFallback" = "Hidden"
         }
         
-        Cull Off
         Blend One One // Emission ; additive
 
         Pass {
@@ -26,13 +27,15 @@ Shader "Lereldarion/EnergyShieldSurface" {
 
             struct appdata {
                 float4 vertex : POSITION;
-                float2 uv : TEXCOORD0;
+                float2 uv0 : TEXCOORD0;
+                float2 uv1 : TEXCOORD1;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
             struct v2f {
                 float4 vertex : SV_POSITION;
-                float2 uv : TEXCOORD0;
+                float2 uv0 : TEXCOORD0;
+                float2 uv1 : TEXCOORD1;
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -41,11 +44,13 @@ Shader "Lereldarion/EnergyShieldSurface" {
                 UNITY_SETUP_INSTANCE_ID(i);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
                 o.vertex = UnityObjectToClipPos(i.vertex);
-                o.uv = i.uv;
+                o.uv0 = i.uv0;
+                o.uv1 = i.uv1;
                 return o;
             }
 
-            uniform float _Falloff_Radius;
+            uniform float _Deploy_Shield;
+            uniform float _Deploy_Tools;
             UNITY_DECLARE_TEX2D(_NoiseMap);
 
             float noise (float2 v){ 
@@ -88,15 +93,13 @@ Shader "Lereldarion/EnergyShieldSurface" {
             fixed4 frag (v2f i) : SV_Target {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
                 
-                float2 p = i.uv - 0.5; // center coordinates
-                float radius = length(p);
-                if (radius > _Falloff_Radius) {
+                bool show = i.uv1.x <= _Deploy_Shield && i.uv1.y <= _Deploy_Tools;
+                if (!show) {
                     discard;
-                    // return fixed4(0, 0, 0, 0);
                 }
 
                 float3 base_color = float3(0.01, 0.12, 0.25);
-                float rz = dualfbm(p * 4.); // create pattern
+                float rz = dualfbm(i.uv0 * 4.); // create pattern
                 float3 pattern_color = pow(abs(base_color / rz), 0.99);
                 return fixed4(pattern_color, 1.);
             }

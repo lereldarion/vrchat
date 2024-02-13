@@ -80,13 +80,20 @@ Shader "Lereldarion/Replicator/Prototype"
             float distance_squared(float3 lhs, float3 rhs) { return length_squared(rhs - lhs); }
 
             uint lod_level() {
-                float3 object_origin_ws = mul(unity_ObjectToWorld, float4(0, 0, 0, 1)); // Translation components https://en.wikibooks.org/wiki/Cg_Programming/Vertex_Transformations
                 #if UNITY_SINGLE_PASS_STEREO
-                float3 camera_origin_ws = 0.5 * (unity_StereoWorldSpaceCameraPos[0] + unity_StereoWorldSpaceCameraPos[1]);
+                float3 camera_position_ws = 0.5 * (unity_StereoWorldSpaceCameraPos[0] + unity_StereoWorldSpaceCameraPos[1]);
                 #else
-                float3 camera_origin_ws = _WorldSpaceCameraPos;
+                float3 camera_position_ws = _WorldSpaceCameraPos;
                 #endif
-                return distance_squared(object_origin_ws, camera_origin_ws) < (_Replicator_Lod_World_Distance * _Replicator_Lod_World_Distance) ? 0 : 1;
+                float3 camera_position_os = mul(unity_WorldToObject, float4(camera_position_ws, 1)).xyz;
+                float camera_distance_squared_os = length_squared(camera_position_os);
+
+                // Never animated, and 5m works well ; account for avatar scaling
+                // Using pixel precision would be better, but this works ok for now
+                float2 lod_transitions = float2(5, 10);
+                float2 lod_transitions_sq = lod_transitions * lod_transitions;
+                uint2 use_upper_lod = camera_distance_squared_os < lod_transitions_sq ? 0 : 1;
+                return use_upper_lod[0] + use_upper_lod[1]; // 0 -> 1 -> 2
             }
 
             float4x4 ts_to_os_from_triangle_tangent_space(Vertex2Geometry input[3]) {

@@ -175,6 +175,7 @@ def scan_block_loop_triangles(block: bpy.types.Mesh) -> TriangulationData:
                 del unmatched_edges[vertice_pair]
             else:
                 unmatched_edges[vertice_pair] = loop_triangle.index
+        loop_triangle_adjacency[loop_triangle.index] # touch to init if not ; or else isolated triangles are forgotten
 
     return TriangulationData(nb_use_by_direction_vector, dict(loop_triangle_adjacency), loop_triangle_vertice_data, loop_triangle_normal)
 
@@ -247,7 +248,7 @@ def vertex_sequence_for_triangleN(triangle_indices: typing.List[int], triangulat
     return sequence
 
 def divide_into_triangle_strip_vertex_sequences(triangulation: TriangulationData, max_strip_length: int) -> typing.List[typing.List[VertexData]]:
-    assert max_strip_length > 3
+    assert max_strip_length >= 3
     max_triangle_count = max_strip_length - 2
     
     remaining_triangles = set(triangulation.adjacency.keys())
@@ -342,8 +343,10 @@ def organize_strips_into_instances(strips: typing.List[typing.List[VertexData]],
         finished_instances.append(unfinished_instance)
     return finished_instances   
 
-def instance_vertice_lengths(instances: typing.List[typing.List[typing.List[VertexData]]]) -> typing.List[int]:
-    return [sum(len(strip) for strip in strips) for strips in instances]
+def pad_instances_to_n(instances, n: int):
+    pad_count = n - len(instances)
+    assert pad_count >= 0
+    return instances + [[]] * pad_count
 
 ### Output shader code
 
@@ -352,60 +355,75 @@ if __name__ == "__main__":
     triangle: bpy.types.Object = bpy.context.collection.objects["triangle"]
     block_lod0: bpy.types.Object = bpy.context.collection.objects["block_lod0"]
     block_lod1: bpy.types.Object = bpy.context.collection.objects["block_lod1"]
+    block_lod2: bpy.types.Object = bpy.context.collection.objects["block_lod2"]
 
-    assert block_lod0.matrix_world == block_lod1.matrix_world # Must match as we only have one ts_to_os matrix
+    # Must match as we only have one ts_to_os matrix
+    assert block_lod0.matrix_world == block_lod1.matrix_world
+    assert block_lod0.matrix_world == block_lod2.matrix_world
     block_os_to_ts, ts_xy1_to_uv = build_transformation_matrices(triangle, block_lod0)
 
     # Only run if triangle space has changed, as it changes uv and all dependent values (normal maps, etc) must be redone.
     #set_block_faces_uv_to_triangle_uv(block_lod0.data, block_os_to_ts, ts_xy1_to_uv)
 
-    triangulation_lod0 = scan_block_loop_triangles(block_lod0.data)
-    triangulation_lod1 = scan_block_loop_triangles(block_lod1.data)
-
     # Finding the right strip size and split is NP-complete so I am not interested in trying any "optimal" solution algorithmically.
     # For lod0 model, strips = 4x7+12x4 vertices, so using 8 vertice instances leads to 10 instances at 7 or 8 vertices.
+    triangulation_lod0 = scan_block_loop_triangles(block_lod0.data)
     strips_lod0 = divide_into_triangle_strip_vertex_sequences(triangulation_lod0, max_strip_length = 7)
     instances_lod0 = organize_strips_into_instances(strips_lod0, max_nb_vertice_per_instance = 8)
     # lod1 model is tuned to match lod0 sizing, as geometry stage instance count is a constant
     # strips = (2x6|4x4 by forcing splitting)+6x4 vertices, so force splitting the faces to have exactly 10x4 vertice instances
+    triangulation_lod1 = scan_block_loop_triangles(block_lod1.data)
     strips_lod1 = divide_into_triangle_strip_vertex_sequences(triangulation_lod1, max_strip_length = 4)
     instances_lod1 = organize_strips_into_instances(strips_lod1, max_nb_vertice_per_instance = 4)
+    # lod2 model is very simplified to avoid small triangles ; only 4 triangles
+    triangulation_lod2 = scan_block_loop_triangles(block_lod2.data)
+    strips_lod2 = divide_into_triangle_strip_vertex_sequences(triangulation_lod2, max_strip_length = 3)
+    #raise RuntimeError(triangulation_lod2)
+    instances_lod2 = organize_strips_into_instances(strips_lod2, max_nb_vertice_per_instance = 3)
+
+
+    # Pad instances from lods to fill all geometry instances (count is shared by all lods in the shader)
+    lods = [instances_lod0, instances_lod1, instances_lod2]
+    nb_geometry_instances = max(len(instances) for instances in lods)
+    lods = [pad_instances_to_n(instances, nb_geometry_instances) for instances in lods]
+    # Vertex Data from lods are concatenated in one big flattened array, and then indexed with an indirection
+    concatenated_instances = [instance for instances in lods for instance in instances]
+    vertex_count_of_concatenated_instances = [sum(len(strip) for strip in strips) for strips in concatenated_instances]
+    assert len(concatenated_instances) == len(lods) * nb_geometry_instances
+    # Determine bounds of concatenated data in the flattened array, including end
+    # instance N ends where instance N+1 starts
+    concatenated_instance_data_boundaries = [sum(vertex_count_of_concatenated_instances[:i]) for i in range(len(vertex_count_of_concatenated_instances) + 1)]
+    assert len(concatenated_instance_data_boundaries) == len(lods) * nb_geometry_instances + 1
     
     block_os_to_ts_dir = block_os_to_ts.to_3x3()
 
     # Instanced geometry data
-    with open (bpy.path.abspath ("//geometry_baked_data.hlsl"), "w") as output:
+    with open (bpy.path.abspath ("//baked_data.hlsl"), "w") as output:
         # Precomputed random table
         generate_random_table(output)
-        # Vertex Data from both lod are concatenated so that access only changes offsets in indice array.
-        concatenated_instances_nb_vertices = instance_vertice_lengths(instances_lod0 + instances_lod1)
-        assert len(instances_lod0) == len(instances_lod1) # In general we should pad if mismatch
         # Geometry stage parameters
         print ("// geometry stage constants ", file=output)
-        print (f"static const uint nb_geometry_instances = {len(instances_lod0)};", file=output)
-        print (f"static const uint nb_vertices_per_geometry_instance = {max(concatenated_instances_nb_vertices)};\n", file=output)
-        # We will build an array of vertex Data, and a list of indice offsets for each instance. Define some types :
+        print (f"static const uint nb_geometry_instances = {nb_geometry_instances};", file=output)
+        print (f"static const uint nb_vertices_per_geometry_instance = {max(vertex_count_of_concatenated_instances)};\n", file=output)
         print ("struct BakedVertexData { float3 position_ts; float3 normal_ts; float3 tangent_ts; float2 uv0; bool strip_restart; };", file=output)
-        # Vertex Data from both lod are concatenated so that access only changes offsets in indice array
-        def print_instance_vertex_data(pad: str, instance_strips: typing.List[typing.List[VertexData]]):
-            strip_restart = False # implicit restart at start of geometry stage
-            for strip in instance_strips:
-                for vertex in strip:
-                    position_ts = (block_os_to_ts @ vertex.position.to_4d()).to_3d()
-                    normal_ts = block_os_to_ts_dir @ vertex.normal
-                    tangent_ts = block_os_to_ts_dir @ vertex.tangent
-                    print (f"{pad}{{ {FloatN(position_ts)}, {FloatN(normal_ts)}, {FloatN(tangent_ts)}, {FloatN(vertex.uv)}, {'true' if strip_restart else 'false'} }},", file=output)
-                    strip_restart = False
-                strip_restart = True
-
-        print (f"static const BakedVertexData geometry_baked_vertex_data[{sum(concatenated_instances_nb_vertices)}] = {{", file=output)
-        print ("    // LOD0 data", file=output)
-        for instance_strips in instances_lod0:
-            print_instance_vertex_data("    ", instance_strips)
-        print ("    // LOD1 data", file=output)
-        for instance_strips in instances_lod1:
-            print_instance_vertex_data("    ", instance_strips)
-        print (f"}};\n", file=output)
-        # Indices, in the same order ; instance N ends where instance N+1 starts
-        instance_data_boundaries = [sum(concatenated_instances_nb_vertices[:i]) for i in range(len(concatenated_instances_nb_vertices) + 1)]
-        print (f"static const uint geometry_instance_boundaries[{len(concatenated_instances_nb_vertices) + 1}] = {{ {', '.join(str(i) for i in instance_data_boundaries)} }};", file=output)
+        print (f"static const BakedVertexData geometry_baked_vertex_data[{sum(vertex_count_of_concatenated_instances)}] = {{", file=output)
+        for lod_level, instances in enumerate(lods):
+            print (f"    // LOD{lod_level} data", file=output)
+            for strips in instances:
+                # strip sequence for one instance
+                strip_restart = False # implicit restart at start of geometry stage
+                for strip in strips:
+                    for vertex in strip:
+                        position_ts = (block_os_to_ts @ vertex.position.to_4d()).to_3d()
+                        normal_ts = block_os_to_ts_dir @ vertex.normal
+                        tangent_ts = block_os_to_ts_dir @ vertex.tangent
+                        print (f"    {{ {FloatN(position_ts)}, {FloatN(normal_ts)}, {FloatN(tangent_ts)}, {FloatN(vertex.uv)}, {'true' if strip_restart else 'false'} }},", file=output)
+                        strip_restart = False
+                    strip_restart = True
+        print ("};\n", file=output)
+        print (f"static const uint geometry_instance_boundaries[{len(concatenated_instance_data_boundaries)}] = {{", file=output)
+        for lod_level in range(len(lods)):
+            lod_boundaries = concatenated_instance_data_boundaries[lod_level * nb_geometry_instances : (lod_level + 1) * nb_geometry_instances]
+            print (f"    {', '.join(str(i) for i in lod_boundaries)},", file=output)
+        print (f"    {concatenated_instance_data_boundaries[len(lods) * nb_geometry_instances]}", file=output)
+        print ("};", file=output)
