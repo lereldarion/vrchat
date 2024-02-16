@@ -85,10 +85,10 @@ namespace Lereldarion {
 
         //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-        private enum ToolMode { Hand, Sword, Knife, Clamp } // Matches synced int
+        private enum ToolMode { Hand, Sword, Knife, Clamp, Cannon } // Matches synced int
         private enum ToolModeState {
             Entry, // Entry point into a new mode
-            EnergySurfaceDeployed, // Many weapons use an energy surface deployed a little bit later
+            Full, // Many weapons use an energy surface deployed a little bit later
             Clamp_Closing,
         }
 
@@ -108,12 +108,10 @@ namespace Lereldarion {
             // dislocation : disable elements if blocks start flying
             var arm_cut = layer.FloatParameter("Dislocation/RightArm/Cut");
             var arm_cut_synced = layer.FloatParameter("Dislocation/RightArm/Synced");
-            const float arm_cut_hand_value = 0.98f; // First blocks start flying
+            const float arm_cut_hand_value = 0.95f; // First blocks start flying
             var dislocation_global = layer.BoolParameter("Dislocation/Global/Synced");
 
-            // transition times
             float reorganization_dt = 0.5f;
-            float energy_transition_dt = 0.2f;
 
             // Damage position (pos, rot, scale)
             var damage_transform_values = new Dictionary<ToolMode, TransformValues> {
@@ -127,13 +125,14 @@ namespace Lereldarion {
                 clip.BlendShape(editor.main_mesh, "Deploy_Sword", mode == ToolMode.Sword ? 100 : 0);
                 clip.BlendShape(editor.main_mesh, "Deploy_Knife", mode == ToolMode.Knife ? 100 : 0);
                 clip.BlendShape(editor.main_mesh, "Deploy_Clamp", mode == ToolMode.Clamp ? 100 : 0);
+                clip.BlendShape(editor.main_mesh, "Deploy_Cannon", mode == ToolMode.Cannon ? 100 : 0);
                 clip.Animating(edit_clip => {
                     // If using blocks from arm, use rotation from hand
                     int rotation_source = (mode == ToolMode.Sword || mode == ToolMode.Clamp) ? 1 : 0;
                     AnimateConstraintSources(edit_clip, root_constraint, (curve, i) => curve.WithOneFrame(i == rotation_source));
                     // Energy surface
                     bool uses_energy_surface = mode == ToolMode.Sword || mode == ToolMode.Knife;
-                    bool energy_surface_deployed = uses_energy_surface && state == ToolModeState.EnergySurfaceDeployed;
+                    bool energy_surface_deployed = uses_energy_surface && state == ToolModeState.Full;
                     edit_clip.Animates(editor.main_mesh, $"{energy_surface_material}._Deploy_Tools").WithOneFrame(energy_surface_deployed ? 1 : 0);
                     
                     // Clamp bone rotations (only on z)
@@ -149,7 +148,7 @@ namespace Lereldarion {
                     // Damage ontact sender (enabled, and position) : use table to determine when to set it
                     var damage_contact_config = new TransformValues { position = Vector3.zero, rotation = Vector3.zero, scale = 1f };
                     bool damage_contact_has_config = damage_transform_values.TryGetValue(mode, out damage_contact_config);
-                    bool damage_contact_enabled = damage_contact_has_config && state == ToolModeState.EnergySurfaceDeployed;
+                    bool damage_contact_enabled = damage_contact_has_config && state == ToolModeState.Full;
                     edit_clip.Animates(editor.damage_contact_sender, "m_Enabled").WithOneFrame(damage_contact_has_config ? 1 : 0);
                     AnimateTransformVec3(edit_clip, editor.damage_contact_sender.transform, "m_LocalPosition", (curve, i) => curve.WithOneFrame(damage_contact_config.position[i]));
                     AnimateTransformVec3(edit_clip, editor.damage_contact_sender.transform, "m_LocalEulerAngles", (curve, i) => curve.WithOneFrame(damage_contact_config.rotation[i]));
@@ -165,9 +164,9 @@ namespace Lereldarion {
                     entry_states.Add(mode, state);
                 }
                 // locks hand
-                bool lock_hand_blocks = mode != ToolMode.Hand;
-                state.Drives(lock_hand_in_gesture, lock_hand_blocks).DrivingLocally();
-                var tracking = lock_hand_blocks ? VRC.SDKBase.VRC_AnimatorTrackingControl.TrackingType.Animation : VRC.SDKBase.VRC_AnimatorTrackingControl.TrackingType.Tracking;
+                bool fingers_use_ik = mode == ToolMode.Hand && mode_state == ToolModeState.Full;
+                state.Drives(lock_hand_in_gesture, !fingers_use_ik); // must be non local
+                var tracking = fingers_use_ik ? VRC.SDKBase.VRC_AnimatorTrackingControl.TrackingType.Tracking : VRC.SDKBase.VRC_AnimatorTrackingControl.TrackingType.Animation;
                 state.TrackingSets(AacFlState.TrackingElement.RightFingers, tracking);
                 
                 state.WithAnimation(clip);
@@ -177,26 +176,39 @@ namespace Lereldarion {
                 return make_state_with(mode, mode_state, make_clip(mode, mode_state).Clip);
             }
             
-            var hand = make_state(ToolMode.Hand, ToolModeState.Entry);
-            hand.Drives(synced, (int) ToolMode.Hand); // Reset in case we arrived here due to dislocation
+            // hand "Entry" is with hand locked. "Full" unlocks it. TODO generalize if new tools with free hand arrive
+            var hand_clip = make_clip(ToolMode.Hand, ToolModeState.Full); // Shared clip as the only difference is in state behaviors
+            var hand_locked_rest = make_state_with(ToolMode.Hand, ToolModeState.Entry, hand_clip.Clip);
+            var hand_with_ik = make_state_with(ToolMode.Hand, ToolModeState.Full, hand_clip.Clip);
+            hand_locked_rest.TransitionsTo(hand_with_ik).When(synced.IsEqualTo((int) ToolMode.Hand));
+            hand_with_ik.TransitionsTo(hand_locked_rest).When(synced.IsNotEqualTo((int) ToolMode.Hand));
 
-            // Dislocation goes fast
-            layer.AnyTransitionsTo(hand).WithTransitionDurationSeconds(reorganization_dt / 2f)
+            // Dislocation
+            var dislocated = layer.NewState("Dislocated").LeftOf(hand_with_ik); // Waiting state, stay there until dislocation is clear
+            dislocated.Drives(synced, (int) ToolMode.Hand).DrivingLocally();
+            dislocated.WithAnimation(hand_clip);
+            layer.AnyTransitionsTo(dislocated)
+                .WithTransitionDurationSeconds(reorganization_dt / 2f) // faster transition
+                .WithNoTransitionToSelf()
                 .When(arm_cut.IsLessThan(arm_cut_hand_value))
                 .Or().When(arm_cut_synced.IsLessThan(arm_cut_hand_value))
                 .Or().When(dislocation_global.IsTrue());
+            dislocated.TransitionsTo(hand_with_ik)
+                .When(arm_cut.IsGreaterThan(arm_cut_hand_value))
+                .And(arm_cut_synced.IsGreaterThan(arm_cut_hand_value))
+                .And(dislocation_global.IsFalse());
 
             // Sword
             var sword_intermediate = make_state(ToolMode.Sword, ToolModeState.Entry);
-            var sword_full = make_state(ToolMode.Sword, ToolModeState.EnergySurfaceDeployed);
-            sword_intermediate.TransitionsTo(sword_full).WithTransitionDurationSeconds(energy_transition_dt).When(synced.IsEqualTo((int) ToolMode.Sword));
-            sword_full.TransitionsTo(sword_intermediate).WithTransitionDurationSeconds(energy_transition_dt).When(synced.IsNotEqualTo((int) ToolMode.Sword));
+            var sword_full = make_state(ToolMode.Sword, ToolModeState.Full);
+            sword_intermediate.TransitionsTo(sword_full).WithTransitionDurationSeconds(0.3f).When(synced.IsEqualTo((int) ToolMode.Sword));
+            sword_full.TransitionsTo(sword_intermediate).WithTransitionDurationSeconds(0.3f).When(synced.IsNotEqualTo((int) ToolMode.Sword));
 
             // Knife
             var knife_intermediate = make_state(ToolMode.Knife, ToolModeState.Entry);
-            var knife_full = make_state(ToolMode.Knife, ToolModeState.EnergySurfaceDeployed);
-            knife_intermediate.TransitionsTo(knife_full).WithTransitionDurationSeconds(energy_transition_dt).When(synced.IsEqualTo((int) ToolMode.Knife));
-            knife_full.TransitionsTo(knife_intermediate).WithTransitionDurationSeconds(energy_transition_dt).When(synced.IsNotEqualTo((int) ToolMode.Knife));
+            var knife_full = make_state(ToolMode.Knife, ToolModeState.Full);
+            knife_intermediate.TransitionsTo(knife_full).WithTransitionDurationSeconds(0.15f).When(synced.IsEqualTo((int) ToolMode.Knife));
+            knife_full.TransitionsTo(knife_intermediate).WithTransitionDurationSeconds(0.15f).When(synced.IsNotEqualTo((int) ToolMode.Knife));
 
             // Clamp
             var clamp_open = make_clip(ToolMode.Clamp, ToolModeState.Entry);
@@ -207,12 +219,17 @@ namespace Lereldarion {
             var clamp_entry = make_state_with(ToolMode.Clamp, ToolModeState.Entry, clamp_open.Clip);
             var clamp_closing = make_state_with(ToolMode.Clamp, ToolModeState.Clamp_Closing, clamp_closing_blendtree);
             clamp_entry.TransitionsTo(clamp_closing).WithTransitionDurationSeconds(0.1f)
-                .When(synced.IsEqualTo((int) ToolMode.Clamp)).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fist));
+                .When(synced.IsEqualTo((int) ToolMode.Clamp))
+                .And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fist));
             clamp_closing.TransitionsTo(clamp_entry).WithTransitionDurationSeconds(0.1f)
-                .When(synced.IsNotEqualTo((int) ToolMode.Clamp))
-                .Or().When(layer.Av3().GestureRight.IsNotEqualTo(AacAv3.Av3Gesture.Fist));
+                .When(synced.IsNotEqualTo((int) ToolMode.Clamp));
+            clamp_closing.TransitionsTo(clamp_entry) // Do not blend, as it generates spikes of gestureweight during the blending to other gestures
+                .When(layer.Av3().GestureRight.IsNotEqualTo(AacAv3.Av3Gesture.Fist));
 
-            // Make all transitions between modes
+            // Cannon
+            var cannon_test = make_state(ToolMode.Cannon, ToolModeState.Entry);
+
+            // Make all transitions between modes. Currently assumes hand is locked between all transitions
             foreach(ToolMode from_mode in Enum.GetValues(typeof(ToolMode))) {
                 foreach(ToolMode to_mode in Enum.GetValues(typeof(ToolMode))) {
                     if (from_mode == to_mode) {
@@ -250,13 +267,14 @@ namespace Lereldarion {
             var transition = layer.NewState("Transition").RightOf(retracted); // Blocks moved, shield still down
             var deployed = layer.NewState("Deployed").RightOf(transition);
 
-            retracted.WithAnimation(aac.NewClip("shield_retracted").Animating(clip => {
+            var retracted_clip = aac.NewClip("shield_retracted").Animating(clip => {
                 AnimateConstraintSources(clip, constraint, (curve, i) => curve.WithOneFrame(i == 0));
                 clip.Animates(editor.main_mesh, $"blendShape.{blendshape}").WithOneFrame(0);
                 clip.Animates(editor.main_mesh, $"{energy_surface_material}._Deploy_Shield").WithOneFrame(0);
                 clip.Animates(editor.left_lower_arm_contact, "m_Enabled").WithOneFrame(1); 
                 clip.Animates(collider, "m_Enabled").WithOneFrame(0);
-            }));
+            });
+            retracted.WithAnimation(retracted_clip);
             transition.WithAnimation(aac.NewClip("shield_transition").Animating(clip => {
                 AnimateConstraintSources(clip, constraint, (curve, i) => curve.WithOneFrame(i == 1));
                 clip.Animates(editor.main_mesh, $"blendShape.{blendshape}").WithOneFrame(100);
@@ -273,21 +291,27 @@ namespace Lereldarion {
             }));
 
             // Deploying
-            retracted.TransitionsTo(transition).WithTransitionDurationSeconds(block_dt)
-                .When(synced.IsTrue()).And(arm_cut_synced.IsGreaterThan(arm_cut_hand_value)).And(dislocation_global.IsFalse());
-            transition.TransitionsTo(deployed).WithTransitionDurationSeconds(shield_dt)
-                .When(synced.IsTrue()).And(arm_cut_synced.IsGreaterThan(arm_cut_hand_value)).And(dislocation_global.IsFalse());
+            retracted.TransitionsTo(transition).WithTransitionDurationSeconds(block_dt).When(synced.IsTrue());
+            transition.TransitionsTo(deployed).WithTransitionDurationSeconds(shield_dt).When(synced.IsTrue());
 
             // Retracting normally
             deployed.TransitionsTo(transition).WithTransitionDurationSeconds(shield_dt).When(synced.IsFalse());
             transition.TransitionsTo(retracted).WithTransitionDurationSeconds(block_dt).When(synced.IsFalse());
 
-            // Dislocation goes faster
-            layer.AnyTransitionsTo(retracted).WithNoTransitionToSelf()
-                .WithTransitionDurationSeconds((block_dt + shield_dt) / 3f)
+            // Dislocation
+            var dislocated = layer.NewState("Dislocated").Under(retracted); // Waiting state until dislocation is cleared
+            dislocated.Drives(synced, false).DrivingLocally(); // Forces shield to be stored
+            dislocated.WithAnimation(retracted_clip);
+            layer.AnyTransitionsTo(dislocated)
+                .WithNoTransitionToSelf()
+                .WithTransitionDurationSeconds((block_dt + shield_dt) / 3f) // fast transition
                 .When(arm_cut.IsLessThan(arm_cut_hand_value))
                 .Or().When(arm_cut_synced.IsLessThan(arm_cut_hand_value))
                 .Or().When(dislocation_global.IsTrue());
+            dislocated.TransitionsTo(retracted)
+                .When(arm_cut.IsGreaterThan(arm_cut_hand_value))
+                .And(arm_cut_synced.IsGreaterThan(arm_cut_hand_value))
+                .And(dislocation_global.IsFalse());
         }
 
         //////////////////////////////////////////////////////////////////////////////////////////////////////////////////

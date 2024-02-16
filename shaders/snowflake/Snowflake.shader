@@ -13,6 +13,7 @@ Properties {
     _Raymarching_Zoom("Zoom", Range(0.1, 4.)) = 3
     _Raymarching_Space_Scale("Snowflake scale", Range(0.1, 10)) = 2
     _Raymarching_Geometry_Radius_Scale("Support Geometry Radius Scale", Range(0.4, 1)) = 0.6 // At higher zoom the flake does not occupy all of the radius-based geometry
+    [NoScaleOffset, NonModifiableTextureData] _Raymarching_NoiseTex("Noise texture", 2D) = "white" {}
 
     // Base animations
     _Replicator_Dislocation_Global("Dislocation Global (show, time, spatial_delay_factor, _)", Vector) = (1, 0, 0, 0)
@@ -82,6 +83,8 @@ SubShader {
             float4 ts_to_ws_1 : TS_TO_WS_1;
             float4 ts_to_ws_2 : TS_TO_WS_2;
 
+            float audiolink_track : AUDIOLINK_TRACK;
+
             UNITY_VERTEX_INPUT_INSTANCE_ID
             UNITY_VERTEX_OUTPUT_STEREO
         };
@@ -98,7 +101,7 @@ SubShader {
         // [0-1]
         float4 hash4 (float4 n) { return frac(sin(n) * 1399763.5453123); }
 
-        // [0-1], more details
+        // [0-1]
         float noise222 (float2 x, float2 y, float2 z) {
             float4 lx = x.xyxy * y.xxyy;
             float4 p = floor(lx);
@@ -108,14 +111,20 @@ SubShader {
             float4 h = lerp(hash4(n.xxyy + NC0.xyxy), hash4(n.xxyy + NC1.xyxy), f.xxzz);
             return dot(lerp(h.xz, h.yw, f.yw), z);
         }
+        UNITY_DECLARE_TEX2D(_Raymarching_NoiseTex);
+        float noise2_tex(float2 p) {
+            float2 uv = p * 0.3; // Scale from commented out code in shadertoy, required
+            return UNITY_SAMPLE_TEX2D_LOD(_Raymarching_NoiseTex, uv * 0.25, 0).x; // shadertoy version used 64x64 tex, we use the 256x256 one here.
+        }
         // [-0.5, 0.5]
         float noise2_centered (float2 p) {
-            // It initially used a LOD switch to 3 versions with various details.
-            // Removed for simplicity. Maybe swap to noise texture to remove sin calls.
-            return noise222(p, float2(20.6, 100.6), float2(0.9, 0.1)) - 0.5;
+            // Initially this was a LOD switch to 3 versions using the sin hash4 function, with various detail levels.
+            // Removed LOD, and finally replaced noise impl with a noise texture ; the noise granularity is critical to the effect.
+            // return noise222(p, float2(20.6, 100.6), float2(0.9, 0.1)) - 0.5;
+            return noise2_tex(p) - 0.5;
         }
 
-        // [0-1]
+        // [0-1], used for seed
         float noise3 (float3 x) {
             float3 p = floor(x);
             float3 f = frac(x);
@@ -338,21 +347,38 @@ SubShader {
 
         #include "Packages/com.llealloo.audiolink/Runtime/Shaders/AudioLink.cginc"
 
-        // Audiolink rumble of blocks https://github.com/llealloo/vrc-udon-audio-link/tree/master/Docs
-        float audiolink_bass_dislocation_time(VertexData v) {
+        // Audiolink : https://github.com/llealloo/vrc-udon-audio-link/tree/master/Docs
+        // bass : rumble of blocs using the dislocation animation
+        // mids : emission along the blocks
+        struct TriangleAudioLink {
+            float bass_dislocation_time;
+            float smoothed_track_threshold_01;
+        };
+        TriangleAudioLink triangle_audiolink(VertexData v) {
+            TriangleAudioLink result;
+            result.bass_dislocation_time = 0;
+            result.smoothed_track_threshold_01 = 0;
+
             if (!(_Replicator_AudioLink && AudioLinkIsAvailable())) {
-                return 0;
+                return result;
             }
 
-            float history_01 = v.uv1.y; // Defined on avatar and pet as 01 from core to extremities.
+            const float history_01 = v.uv1.y; // Defined on avatar and pet as 01 from core to extremities.
+
+            // Bass rumble
             float bass_01 = AudioLinkLerp(ALPASS_AUDIOBASS + float2(history_01 * AUDIOLINK_WIDTH, 0)).r;
-
-            // Ignore low spikes using smoothed threshold 
             float smoothed_bass_level_01 = AudioLinkData(ALPASS_FILTEREDAUDIOLINK + int2(0 /*smoothing*/, 0 /*bass*/));
-            float animation_scale = bass_01 > smoothed_bass_level_01 ? bass_01 : 0;
-
+            float animation_scale = bass_01 > smoothed_bass_level_01 ? bass_01 : 0; // Ignore low spikes using smoothed threshold 
             float max_animation_time = 0.01;
-            return bass_01 * max_animation_time;
+            result.bass_dislocation_time = bass_01 * max_animation_time;
+
+            // high mids [0, 1] threshold
+            float highmids_01 = AudioLinkLerp(ALPASS_AUDIOHIGHMIDS + float2(history_01 * AUDIOLINK_WIDTH, 0)).r;
+            float smoothed_highmids_01 = AudioLinkData(ALPASS_FILTEREDAUDIOLINK + int2(0 /*smoothing*/, 2 /*highmids*/)).r;
+            float threshold_01 = saturate((highmids_01 - smoothed_highmids_01) / (1 - smoothed_highmids_01)); // Remaps above average part of signal to [0,1]
+            result.smoothed_track_threshold_01 = threshold_01;
+
+            return result;
         }
 
         // random_vec used as float4(xyz = translation speed (m/s WS) + rotation axis (TS), w = rotation speed in rad/s)
@@ -403,12 +429,11 @@ SubShader {
             return 0.5 / (GGXV + GGXL);
         }
 
-        half3 F_Schlick(half u, half3 f0) {
-            return f0 + (1.0 - f0) * pow(1.0 - u, 5.0);
-        }
-
+        // Schlick 1994, "An Inexpensive BRDF Model for Physically-Based Rendering"
         half3 F_Schlick(half3 f0, half f90, half VoH) {
-            // Schlick 1994, "An Inexpensive BRDF Model for Physically-Based Rendering"
+            return f0 + (f90 - f0) * pow(1.0 - VoH, 5);
+        }
+        half F_Schlick(half f0, half f90, half VoH) {
             return f0 + (f90 - f0) * pow(1.0 - VoH, 5);
         }
 
@@ -444,9 +469,9 @@ SubShader {
 
         half3 compute_color(half3 position_ws, half3 normal_ws) {
             // Ice config
-            const half3 ice_albedo = half3(0.8, 0.8, 1); //half3(0, 0.4, 1.0);
+            const half3 ice_albedo = 0.1 * half3(0.4, 0.8, 1); //half3(0, 0.4, 1.0);
             const half ice_metallicity = 0;
-            const half ice_roughness = 0.05;
+            const half ice_roughness = 0;
             const half occlusion = 1;
 
             const half3 ray_ws = normalize(position_ws - _WorldSpaceCameraPos);
@@ -455,17 +480,10 @@ SubShader {
             half3 worldSpaceViewDir = -ray_ws;
 
             half reflectance = 0.5;
-            half3 f0 = 0.16 * reflectance * reflectance * (1 - ice_metallicity) + ice_albedo * ice_metallicity;
-            half3 indirectDiffuse = 1;
-            half3 indirectSpecular = 0;
-            half3 directSpecular = 0;
+            const half3 f0 = 0.16 * reflectance * reflectance * (1 - ice_metallicity) + ice_albedo * ice_metallicity;
             half perceptualRoughness = ice_roughness;
 
-            #ifndef USING_DIRECTIONAL_LIGHT
-            fixed3 lightDir = normalize(UnityWorldSpaceLightDir(position_ws));
-            #else
-            fixed3 lightDir = _WorldSpaceLightPos0.xyz;
-            #endif
+            fixed3 lightDir = _WorldSpaceLightPos0.xyz; // Always a directional light in fwdbase
 
             half3 lightHalfVector = Unity_SafeNormalize(lightDir + worldSpaceViewDir);
             half lightNoL = saturate(dot(normal_ws, lightDir));
@@ -474,6 +492,7 @@ SubShader {
             half NoV = abs(dot(normal_ws, worldSpaceViewDir)) + 1e-5;
             half3 pixelLight = lightNoL * _LightColor0.rgb * Fd_Burley(perceptualRoughness, NoV, lightNoL, lightLoH);
 
+            half3 indirectDiffuse = 1;
             #if UNITY_LIGHT_PROBE_PROXY_VOLUME
                 UNITY_BRANCH
                 if (unity_ProbeVolumeParams.x == 1) {
@@ -486,25 +505,19 @@ SubShader {
                 indirectDiffuse = max(0, ShadeSH9(half4(normal_ws, 1)));   
             #endif
 
-            half3 dfguv = half3(NoV, perceptualRoughness, 0);
+            half2 dfguv = half2(NoV, perceptualRoughness);
             half2 dfg = UNITY_SAMPLE_TEX2D(_DFG, dfguv).xy;
             half3 energyCompensation = 1.0 + f0 * (1.0 / dfg.y - 1.0);
 
             half rough = perceptualRoughness * perceptualRoughness;
             half clampedRoughness = max(rough, 0.002);
 
-            #if !defined(SPECULAR_HIGHLIGHTS_OFF) && defined(USING_LIGHT_MULTI_COMPILE)
-                half NoH = saturate(dot(normal_ws, lightHalfVector));
-                half3 F = F_Schlick(lightLoH, f0);
-                half D = D_GGX(NoH, clampedRoughness);
-                half V = V_SmithGGXCorrelated(NoV, lightNoL, clampedRoughness);
-
-                F *= energyCompensation;
-
-                directSpecular = max(0, D * V * F) * pixelLight * UNITY_PI;
-            #endif
-
-            half3 fresnel = F_Schlick(NoV, f0);
+            half NoH = saturate(dot(normal_ws, lightHalfVector));
+            half3 F = F_Schlick(f0, 1, lightLoH);
+            half D = D_GGX(NoH, clampedRoughness);
+            half V = V_SmithGGXCorrelated(NoV, lightNoL, clampedRoughness);
+            F *= energyCompensation;
+            half3 directSpecular = max(0, D * V * F) * pixelLight * UNITY_PI;
 
             half3 reflDir = reflect(-worldSpaceViewDir, normal_ws);
             reflDir = lerp(reflDir, normal_ws, clampedRoughness);
@@ -512,33 +525,34 @@ SubShader {
             Unity_GlossyEnvironmentData envData;
             envData.roughness = perceptualRoughness;
             envData.reflUVW = getBoxProjection(reflDir, position_ws, unity_SpecCube0_ProbePosition, unity_SpecCube0_BoxMin.xyz, unity_SpecCube0_BoxMax.xyz);
-
-            indirectSpecular = Unity_GlossyEnvironment(UNITY_PASS_TEXCUBE(unity_SpecCube0), unity_SpecCube0_HDR, envData);
+            half3 indirectSpecular = Unity_GlossyEnvironment(UNITY_PASS_TEXCUBE(unity_SpecCube0), unity_SpecCube0_HDR, envData);
 
             half horizon = min(1 + dot(reflDir, normal_ws), 1);
             indirectSpecular *= horizon * horizon;
 
             const half _SpecOcclusion = 0.75;
-            half specularOcclusion = saturate(length(indirectDiffuse) * (1.0 / _SpecOcclusion));
-            dfg.x *= specularOcclusion;
-            specularOcclusion = computeSpecularAO(NoV, occlusion, clampedRoughness);
+            dfg.x *= saturate(length(indirectDiffuse) * (1.0 / _SpecOcclusion));
+            indirectSpecular *= computeSpecularAO(NoV, occlusion, clampedRoughness) * EnvBRDFMultiscatter(dfg, f0);
 
-            indirectSpecular *= specularOcclusion * EnvBRDFMultiscatter(dfg, f0);
+            half3 pbr_surface = ice_albedo * (1 - ice_metallicity) * (indirectDiffuse * occlusion + pixelLight) + indirectSpecular + directSpecular;
 
-            half3 lit_color = ice_albedo * (1 - ice_metallicity) * (indirectDiffuse * occlusion + pixelLight) + indirectSpecular + directSpecular;
+            // Custom WIP experimental : Refracted transmittance
+            half3 refracted_ray = refract(ray_ws, normal_ws, 1.3 /* water refraction index */);
+            envData.reflUVW = getBoxProjection(refracted_ray, position_ws, unity_SpecCube0_ProbePosition, unity_SpecCube0_BoxMin.xyz, unity_SpecCube0_BoxMax.xyz);
+            half3 refractedSpecular = Unity_GlossyEnvironment(UNITY_PASS_TEXCUBE(unity_SpecCube0), unity_SpecCube0_HDR, envData);
+            // https://en.wikipedia.org/wiki/Schlick%27s_approximation of fresnel transmittance T = 1 - R
+            half3 transmittance = 1 - F_Schlick(ice_albedo, 1, dot(refracted_ray, -normal_ws));
+            return pbr_surface + transmittance * refractedSpecular;
 
-            // Apply "transparency" and some emission
-            half3 background = DecodeHDR (UNITY_SAMPLE_TEXCUBE(unity_SpecCube0, ray_ws), unity_SpecCube0_HDR);
-            return lerp(lit_color, background, NoV);
-
-            // Old
-            /*const half3 ray_ws = normalize(position_ws - _WorldSpaceCameraPos);
+            /* OLD
+            const half3 ray_ws = normalize(position_ws - _WorldSpaceCameraPos);
             half3 background_color = DecodeHDR (UNITY_SAMPLE_TEXCUBE(unity_SpecCube0, ray_ws), unity_SpecCube0_HDR);
             float abs_dot_normal_ray = abs(dot(normal_ws, ray_ws));
             float diffuse_ambient = pow(abs(dot(normal_ws, _WorldSpaceLightPos0.xyz)), 3.0);
             half3 cf = lerp(ice_albedo, background_color, abs_dot_normal_ray);
             cf = lerp(cf, 2, diffuse_ambient);
-            return lerp(background_color, cf, (0.5 + abs_dot_normal_ray * 0.5));*/
+            return lerp(background_color, cf, (0.5 + abs_dot_normal_ray * 0.5));
+            */
         }
         
         ///////////////////////////////////////////////////
@@ -607,7 +621,8 @@ SubShader {
             DislocationAnimationConfig config = dislocation_animation_config(input[0]);
             if (!config.show) { return; }
 
-            config.time += audiolink_bass_dislocation_time(input[0]);
+            const TriangleAudioLink audiolink = triangle_audiolink(input[0]);
+            config.time += audiolink.bass_dislocation_time;
 
             float4x4 ts_to_os = ts_to_os_from_triangle_position_manual(input);
             animate_ts_to_os(ts_to_os, random_float3_float(snowflake_id), config.time);
@@ -622,6 +637,7 @@ SubShader {
             output.ts_to_ws_0 = ts_to_ws[0];
             output.ts_to_ws_1 = ts_to_ws[1];
             output.ts_to_ws_2 = ts_to_ws[2];
+            output.audiolink_track = audiolink.smoothed_track_threshold_01;
 
             const float3 geometry_scale = float3(_Raymarching_Geometry_Radius_Scale * snowflake_xy_radius * float2(1, 1), snowflake_z_thickness);
             const LodIndexes indexes = lod_indexes(instance_id);
@@ -663,6 +679,7 @@ SubShader {
 
             // Lighting
             result.color = half4(compute_color(position_ws, normal_ws), 1);
+            //result.color.rgb += half3(0, 0.4, 1) * input.audiolink_track * 0.5; FIXME integrate in a nicer way (lighting)
 
             // Depth
             const float4 pos = mul(UNITY_MATRIX_VP, float4(position_ws, 1));
