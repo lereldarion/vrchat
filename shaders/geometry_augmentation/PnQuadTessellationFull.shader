@@ -56,7 +56,8 @@
 // This has similar quality, is cheaper to compute, and singularity is only a point.
 // Angular precision is inferred to reach 1 pixel at screen center.
 
-Shader "Lereldarion/Tessellation/PnQuadFull" {
+Shader "Lereldarion/Tessellation/PnQuadFull"
+{
     Properties {
         [Header (Standard Shader Parameters)]
         _Color ("Color", Color) = (1,1,1,1)
@@ -192,38 +193,6 @@ Shader "Lereldarion/Tessellation/PnQuadFull" {
                 return output;
             }
 
-            float edge_tessellation_factor (const TessellationVertexData p0, const TessellationVertexData p1) {
-                float3 p0p1_os = p1.position_os - p0.position_os;
-                float3 d01_os = dot (p0p1_os, p1.pn_normal_os) * p1.pn_normal_os - dot (p0p1_os, p0.pn_normal_os) * p0.pn_normal_os;
-                float3 center_p0p1_os = 0.5 * (p0.position_os + p1.position_os);
-
-                // Measure angular size of max phong displacement from camera viewpoint.
-                // Easier in view space, but world space is cheaper. World to view space should have uniform scaling.
-                float3 eye_to_center_p0p1_ws = mul (unity_ObjectToWorld, float4 (center_p0p1_os, 1)).xyz - _WorldSpaceCameraPos;
-                float3 max_phong_ws = mul ((float3x3) unity_ObjectToWorld, 0.25 * 0.5 * d01_os); // Vector, not position, so ignore translations
-
-                // Approximate angle by using tan(angle) = |max_phong projected on eye dir plane| / eye_distance
-                // A previous strategy was to use cross(eye_dir_to_a, eye_dir_to_b) to compute sin of angle, but this was 10% more math cost.
-                float inv_ec2 = 1. / dot (eye_to_center_p0p1_ws, eye_to_center_p0p1_ws);
-                float3 max_phong_proj_ws = max_phong_ws - (inv_ec2 * dot (max_phong_ws, eye_to_center_p0p1_ws)) * eye_to_center_p0p1_ws;
-                float abs_tan_angle = sqrt (dot (max_phong_proj_ws, max_phong_proj_ws) * inv_ec2);
-
-                // camera --z-- 0 <- center of screen
-                //        `a--- x <- x world space coord, target is pixel_precision px on the screen
-                // World space angle a small => sin a = tan a = a = x / z = angle_precision
-                // Projection + divide + ComputeScreenPos(uv) + to_pixel : x * proj[0][0] * (1 / z) * (0.5 * unity_StereoScaleOffset.x) * ScreenParams.x = pixel_precision
-                #if UNITY_SINGLE_PASS_STEREO
-                float scale_offset = unity_StereoScaleOffset[unity_StereoEyeIndex].x;
-                #else
-                float scale_offset = 1;
-                #endif
-                float inv_angle_precision = unity_CameraProjection[0][0] * 0.5 * scale_offset * _ScreenParams.x / pixel_precision;
-
-                float tessellation_level = sqrt (abs_tan_angle * inv_angle_precision);
-
-                return clamp (tessellation_level, 1, 64);
-            }
-
             float3 project_on_tangent_plane_to_normal (float3 vec, float3 normal) {
                 return vec - dot (vec, normal) * normal;
             }
@@ -253,13 +222,15 @@ Shader "Lereldarion/Tessellation/PnQuadFull" {
                 // camera --z-- 0 <- center of screen
                 //        `a--- x <- x world space coord, target is pixel_precision px on the screen
                 // World space angle a small => sin a = tan a = a = x / z = angle_precision
-                // Projection + divide + ComputeScreenPos(uv) + to_pixel : x * proj[0][0] * (1 / z) * (0.5 * unity_StereoScaleOffset.x) * ScreenParams.x = pixel_precision
                 #if UNITY_SINGLE_PASS_STEREO
-                float scale_offset = unity_StereoScaleOffset[unity_StereoEyeIndex].x;
+                float2 screen_pixel_size = _ScreenParams.xy * unity_StereoScaleOffset[unity_StereoEyeIndex].xy;
                 #else
-                float scale_offset = 1;
+                float2 screen_pixel_size = _ScreenParams.xy;
                 #endif
-                float angle_precision = pixel_precision / (unity_CameraProjection[0][0] * 0.5 * scale_offset * _ScreenParams.x);
+                float2 tan_screen_angular_size = unity_CameraProjection._m00_m11; // View angles for camera https://jsantell.com/3d-projection/#projection-symmetry ; positive
+                float2 screen_angular_size = tan_screen_angular_size; // approximation
+                float2 pixel_angular_size = screen_angular_size / screen_pixel_size;
+                float min_pixel_angular_size = min(pixel_angular_size.x, pixel_angular_size.y); // use highest resolution as threshold
 
                 // Tessellation factor
                 float3 center_p0p1_os = 0.5 * (v0.position_os + v1.position_os);
@@ -273,7 +244,7 @@ Shader "Lereldarion/Tessellation/PnQuadFull" {
                 float3 ev0_proj = ev0_ws - inv_eye_dist2 * dot (ev0_ws, eye_dir_ws) * eye_dir_ws;
                 float3 ev1_proj = ev1_ws - inv_eye_dist2 * dot (ev1_ws, eye_dir_ws) * eye_dir_ws;
 
-                float error_target2 = eye_dist2 * angle_precision * angle_precision;
+                float error_target2 = eye_dist2 / (min_pixel_angular_size, min_pixel_angular_size);
                 float polynom_coeff_2 = (7. / 210.) * (dist2 (ev0_proj) - dot (ev0_proj, ev1_proj) + dist2 (ev1_proj));
                 float polynom_coeff_0 = (-5. / 210.) * dist2 (ev0_proj - ev1_proj);
 
