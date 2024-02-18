@@ -77,8 +77,9 @@ SubShader {
 
         struct FragmentData {
             float4 position_cs : SV_POSITION;
-            float3 seed_data : SEED_DATA;
+            float3 position_ws : VERTEX_WS;
 
+            float3 seed_data : SEED_DATA;
             float3 camera_ts : CAMERA_TS;
             float3 geometry_ts : VERTEX_TS;
 
@@ -328,8 +329,8 @@ SubShader {
             float2 screen_angular_size = tan_screen_angular_size; // approximation
             float2 pixel_angular_size = screen_angular_size / screen_pixel_size;
             float min_pixel_angular_size = min(pixel_angular_size.x, pixel_angular_size.y); // use highest resolution as threshold
-            float pixel_angular_threshold = min_pixel_angular_size * 100; // pixels on screen
-            float pixel_angular_threshold_sq = pixel_angular_threshold * pixel_angular_threshold;
+            float2 pixel_angular_thresholds = min_pixel_angular_size * float2(200, 30); // pixels on screen
+            float2 pixel_angular_thresholds_sq = pixel_angular_thresholds * pixel_angular_thresholds;
 
             // Angular size of block : compute in WS ; angles should not change if the transformation is of uniform scale.
             float3 block_center_ws = ts_to_ws._m03_m13_m23;
@@ -338,8 +339,9 @@ SubShader {
             float block_angular_size_sq = block_trangle_size_ws_sq / block_distance_ws_sq; // again approximate tan(a) ~ a
 
             // Final LOD
-            lod.level = block_angular_size_sq > pixel_angular_threshold_sq ? 0 : 1;
-            lod.ice_near_to_far = smoothstep(1, 16, pixel_angular_threshold_sq / block_angular_size_sq);
+            uint2 use_upper_lod = block_angular_size_sq > pixel_angular_thresholds_sq ? 0 : 1;
+            lod.level = use_upper_lod[0] + use_upper_lod[1]; // 0 -> 1 -> 2
+            lod.ice_near_to_far = smoothstep(0.5, 8, pixel_angular_thresholds_sq[1] / block_angular_size_sq);
             return lod;
         }
 
@@ -635,7 +637,7 @@ SubShader {
         };
         LodIndexes lod_indexes(uint instance_id, uint level) {
             LodIndexes indexes;
-            if (level == 1) {
+            if (level == 0) {
                 indexes.start = instance_id * 8;
                 indexes.end = indexes.start + 8;
             } else {
@@ -682,9 +684,9 @@ SubShader {
             const float3 geometry_scale = float3(_Raymarching_Geometry_Radius_Scale * snowflake_xy_radius * float2(1, 1), snowflake_z_thickness);
             const LodIndexes indexes = lod_indexes(instance_id, lod.level);
             for (uint i = indexes.start; i < indexes.end; i += 1) {
-                float3 vertex_ts = geometry_scale * baked_quad_strips[i];
-                output.geometry_ts = vertex_ts;
-                output.position_cs = mul(UNITY_MATRIX_VP, mul(ts_to_ws, float4(vertex_ts, 1)));
+                output.geometry_ts = geometry_scale * baked_quad_strips[i];
+                output.position_ws = mul(ts_to_ws, float4(output.geometry_ts, 1)).xyz;
+                output.position_cs = mul(UNITY_MATRIX_VP, float4(output.position_ws, 1));
                 UNITY_TRANSFER_FOG(output, output.position_cs);
                 stream.Append(output);
             }
@@ -702,20 +704,25 @@ SubShader {
 
             RenderResult result;
             
-            const float3 ray_ts = normalize(input.geometry_ts - input.camera_ts);
-            const MaybePoint pixel = raycast_snowflake(input.camera_ts, ray_ts, input.seed_data);
-            if (!pixel.valid) { discard; }
+            float3 position_ws = input.position_ws;
 
-            const float4x4 ts_to_ws = float4x4(
-                input.ts_to_ws_0,
-                input.ts_to_ws_1,
-                input.ts_to_ws_2,
-                float4(0, 0, 0, 1)
-            );
+            // Perform raymarching only if close enough
+            if (input.lod_level < 2) {
+                const float3 ray_ts = normalize(input.geometry_ts - input.camera_ts);
+                const MaybePoint pixel = raycast_snowflake(input.camera_ts, ray_ts, input.seed_data);
+                if (!pixel.valid) { discard; }
+
+                const float4x4 ts_to_ws = float4x4(
+                    input.ts_to_ws_0,
+                    input.ts_to_ws_1,
+                    input.ts_to_ws_2,
+                    float4(0, 0, 0, 1)
+                );
+                position_ws = mul(ts_to_ws, float4(pixel.position, 1)).xyz;
+            }
 
             // Geometry info in world space
             // Less quality than doing 3 raycast, but 3x cheaper and good enough at VR resolutions
-            const float3 position_ws = mul(ts_to_ws, float4(pixel.position, 1)).xyz;
             const float3 dx_delta = ddx_fine(position_ws);
             const float3 dy_delta = ddy_fine(position_ws);
             const float3 normal_ws = normalize(cross(dy_delta, dx_delta)); // Looks good, checked with debug shading
@@ -725,7 +732,7 @@ SubShader {
             //result.color.rgb += half3(0, 0.4, 1) * input.audiolink_track * 0.5; FIXME integrate in a nicer way (lighting)
 
             // Post processing
-            result.color = lerp(result.color, half4(1 - input.lod_level, input.lod_level, 0, 1), _Replicator_DebugLOD * 0.8);
+            result.color = lerp(result.color, half4(input.lod_level == float3(0, 1, 2) ? 1 : 0, 1), _Replicator_DebugLOD * 0.8);
             UNITY_APPLY_FOG(input.fogCoord, result.color);
 
             // Depth
