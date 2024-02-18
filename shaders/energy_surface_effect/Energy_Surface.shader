@@ -18,10 +18,13 @@ Shader "Lereldarion/EnergySurface" {
         Blend One One // Emission ; additive
 
         Pass {
+            Name "Unlit"
+            
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile_instancing
+            #pragma multi_compile_fog
             #include "UnityCG.cginc"
             #pragma target 5.0
 
@@ -36,6 +39,7 @@ Shader "Lereldarion/EnergySurface" {
                 float4 vertex : SV_POSITION;
                 float2 uv0 : TEXCOORD0;
                 float2 uv1 : TEXCOORD1;
+                UNITY_FOG_COORDS(2)
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -46,6 +50,7 @@ Shader "Lereldarion/EnergySurface" {
                 o.vertex = UnityObjectToClipPos(i.vertex);
                 o.uv0 = i.uv0;
                 o.uv1 = i.uv1;
+                UNITY_TRANSFER_FOG(o, o.vertex);
                 return o;
             }
 
@@ -98,10 +103,13 @@ Shader "Lereldarion/EnergySurface" {
                     discard;
                 }
 
-                float3 base_color = float3(0.01, 0.12, 0.25);
+                fixed3 base_color = fixed3(0.01, 0.12, 0.25);
                 float rz = dualfbm(i.uv0 * 4.); // create pattern
-                float3 pattern_color = pow(abs(base_color / rz), 0.99);
-                return fixed4(pattern_color, 1.);
+                fixed3 pattern_color = pow(abs(base_color / rz), 0.99);
+
+                fixed4 final_color = fixed4(pattern_color, 1.);
+                UNITY_APPLY_FOG(i.fogCoord, final_color);
+                return final_color;
             }
             ENDCG
         }

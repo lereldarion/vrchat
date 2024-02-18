@@ -11,6 +11,7 @@
     _Replicator_MainColor("PBR albedo (override)", Color) = (1, 1, 1, 1)
     _Replicator_Packed_Tex("R=AO, G=roughness, B=audiolink track", 2D) = "white" {}
     [ToggleUI] _Replicator_AudioLink("Enable AudioLink", Float) = 1
+    [ToggleUI] _Replicator_DebugLOD("Debug LOD levels (R=0,G=1,B=2)", Float) = 0
 }
 
 %Template("/Assets/Avatar/replicator_shader/template")
@@ -42,6 +43,7 @@
 {    
     half4 _Replicator_MainColor;
     bool _Replicator_AudioLink;
+    float _Replicator_DebugLOD;
 }
 
 %LibraryFunctions()
@@ -73,24 +75,35 @@
 
 %GeometryDefinitions()
 {
-    float object_to_world_scale() {
-        return length(unity_ObjectToWorld._m00_m10_m20); // x vector in ws
-    }
-    
-    uint lod_level() {
+    // Select between LOD{0,1,2} depending on distance and resolution
+    uint lod_level(float4x4 ts_to_os) {
+        // Strategy is to compare the camera angular size of a block polygons to the angular size of pixels.
+        // Similar criterion as my tessellation experiments. Camera view scale has no effect, only FOV (projection) and resolution.
         #if UNITY_SINGLE_PASS_STEREO
-        float3 camera_position_ws = 0.5 * (unity_StereoWorldSpaceCameraPos[0] + unity_StereoWorldSpaceCameraPos[1]);
+        const float3 camera_position_ws = 0.5 * (unity_StereoWorldSpaceCameraPos[0] + unity_StereoWorldSpaceCameraPos[1]); // Avoid eye inconsistency, take center
+        const float2 screen_pixel_size = _ScreenParams.xy * unity_StereoScaleOffset[unity_StereoEyeIndex].xy; // Split render buffer ; 0.5 when split on x
         #else
-        float3 camera_position_ws = _WorldSpaceCameraPos;
+        const float3 camera_position_ws = _WorldSpaceCameraPos;
+        const float2 screen_pixel_size = _ScreenParams.xy;
         #endif
-        float3 camera_position_os = mul(unity_WorldToObject, float4(camera_position_ws, 1)).xyz;
-        float camera_distance_squared_os = length_squared(camera_position_os);
 
-        // Never animated, and 5m works well ; account for avatar scaling
-        // Using pixel precision would be better, but this works ok for now
-        float2 lod_transitions = float2(5, 10);
-        float2 lod_transitions_sq = lod_transitions * lod_transitions;
-        uint2 use_upper_lod = camera_distance_squared_os < lod_transitions_sq ? 0 : 1;
+        // Angular size of a pixel
+        float2 tan_screen_angular_size = unity_CameraProjection._m00_m11; // View angles for camera https://jsantell.com/3d-projection/#projection-symmetry ; positive
+        float2 screen_angular_size = tan_screen_angular_size; // approximation
+        float2 pixel_angular_size = screen_angular_size / screen_pixel_size;
+        float min_pixel_angular_size = min(pixel_angular_size.x, pixel_angular_size.y); // use highest resolution as threshold
+        float2 pixel_angular_thresholds = min_pixel_angular_size * float2(10, 30);
+        float2 pixel_angular_thresholds_sq = pixel_angular_thresholds * pixel_angular_thresholds;
+
+        // Angular size of block : compute in OS ; angles should not change if the transformation is of uniform scale.
+        float3 camera_position_os = mul(unity_WorldToObject, float4(camera_position_ws, 1)).xyz;
+        float3 block_center_os = ts_to_os._m03_m13_m23;
+        float block_distance_os_sq = distance_squared(camera_position_os, block_center_os);
+        float block_trangle_size_os_sq = length_squared(ts_to_os._m01_m11_m21); // Size of TS y, used as reference for scaling.
+        float block_angular_size_sq = block_trangle_size_os_sq / block_distance_os_sq; // again approximate tan(a) ~ a
+
+        // Final LOD
+        uint2 use_upper_lod = block_angular_size_sq > pixel_angular_thresholds_sq ? 0 : 1;
         return use_upper_lod[0] + use_upper_lod[1]; // 0 -> 1 -> 2
     }
 
@@ -187,8 +200,8 @@
         }
         // Fall translation
         float3 gravity = float3(0, -7, 0); // Unity up = +Y ; reduced for slower animation.
-        float3 initial_velocity = random_vec.xyz * object_to_world_scale();
-        float3 translation_ws = initial_velocity * time + 0.5 * gravity * time * time;
+        float3 initial_velocity_ws = random_vec.xyz * length(unity_ObjectToWorld._m00_m10_m20); // scale init velocity with avatar
+        float3 translation_ws = initial_velocity_ws * time + 0.5 * gravity * time * time;
         ts_to_os._m03_m13_m23 += mul((float3x3) unity_WorldToObject, translation_ws);
     }
 
@@ -213,7 +226,9 @@
         float4x4 ts_to_os = ts_to_os_from_triangle_position_manual(input);
         animate_ts_to_os(ts_to_os, random_float3_float(block_id), config.time);
 
-        uint lod_offset = lod_level() * nb_geometry_instances;
+        uint lod = lod_level(ts_to_os);
+        float4 debug_color = float4(lod == uint3(0, 1, 2) ? 1 : 0, 1);
+        uint lod_offset = lod * nb_geometry_instances;
         uint start = geometry_instance_boundaries[instance_id + lod_offset];
         uint end = geometry_instance_boundaries[instance_id + lod_offset + 1];
 
@@ -229,6 +244,7 @@
             v.tangent.xyz = mul((float3x3) ts_to_os, baked.tangent_ts); // Renormalized afterwards
             v.uv0 = baked.uv0;
             v.uv1.x = audiolink.smoothed_track_threshold_01;
+            v.color = debug_color; 
             // Use real Vertex stage from orels
             stream.Append(Vertex(v));
         }
@@ -270,5 +286,12 @@
         if (threshold_01 > audiolink_track) {
             o.Emission += emission_color;
         }
+    }
+}
+
+%Color("ReplicatorColor")
+{
+    void ReplicatorColor(MeshData d, inout half4 FinalColor) {
+        FinalColor.rgb = lerp(FinalColor.rgb, d.vertexColor.rgb, _Replicator_DebugLOD * 0.8);
     }
 }

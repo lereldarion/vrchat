@@ -22,6 +22,7 @@ Properties {
     _Replicator_Dislocation_LeftLeg("Dislocation LeftLeg (show_upper_bound, animation_lower_bound, time, _)", Vector) = (1, 1, 0, 0)
 
     [ToggleUI] _Replicator_AudioLink("Enable AudioLink", Float) = 1
+    [ToggleUI] _Replicator_DebugLOD("Debug LOD levels (R=0,G=1)", Float) = 0
 
     // Internal for lighting
     [NonModifiableTextureData] _DFG("DFG", 2D) = "white" {}
@@ -41,12 +42,14 @@ SubShader {
         Tags {
             "LightMode" = "ForwardBase"
         }
+        Name "ForwardBase"
 
         CGPROGRAM
         #pragma vertex Vertex
         #pragma geometry Geometry
         #pragma fragment Fragment
 		#pragma multi_compile_instancing
+        #pragma multi_compile_fog
 		#pragma multi_compile_fwdbase
         // It seems than fwdbase is restricted to only DIRECTIONAL light.
         // Making the only light SPOT or POINT has no effect, even when the keywords are forced on (multi_compile_lightpass)
@@ -83,8 +86,11 @@ SubShader {
             float4 ts_to_ws_1 : TS_TO_WS_1;
             float4 ts_to_ws_2 : TS_TO_WS_2;
 
+            float lod_level : LOD_LEVEL; // 0 or 1
+            float ice_near_to_far : ICE_NEAR_TO_FAR;
             float audiolink_track : AUDIOLINK_TRACK;
 
+            UNITY_FOG_COORDS(0)
             UNITY_VERTEX_INPUT_INSTANCE_ID
             UNITY_VERTEX_OUTPUT_STEREO
         };
@@ -269,10 +275,6 @@ SubShader {
             return float3x3(m00, m01, m02, m10, m11, m12, m20, m21, m22);
         }
 
-        float object_to_world_scale() {
-            return length(unity_ObjectToWorld._m00_m01_m02);
-        }
-
         uniform float _Raymarching_Space_Scale;
 
         float4x4 ts_to_os_from_triangle_position_manual(VertexData input[3]) {
@@ -303,6 +305,42 @@ SubShader {
             ts_to_os._m02_m12_m22 = ts_z_os;
             ts_to_os._m03_m13_m23_m33 = float4(ts_origin_os, 1);
             return ts_to_os;
+        }
+
+        struct Lod {
+            uint level;
+            float ice_near_to_far; // blend between near and far ice, [0,1]
+        };
+        Lod lod_level(float4x4 ts_to_ws) {
+            Lod lod;
+            // Strategy is to compare the camera angular size of a block polygons to the angular size of pixels.
+            // Similar criterion as my tessellation experiments. Camera view scale has no effect, only FOV (projection) and resolution.
+            #if UNITY_SINGLE_PASS_STEREO
+            const float3 camera_position_ws = 0.5 * (unity_StereoWorldSpaceCameraPos[0] + unity_StereoWorldSpaceCameraPos[1]); // Avoid eye inconsistency, take center
+            const float2 screen_pixel_size = _ScreenParams.xy * unity_StereoScaleOffset[unity_StereoEyeIndex].xy; // Split render buffer ; 0.5 when split on x
+            #else
+            const float3 camera_position_ws = _WorldSpaceCameraPos;
+            const float2 screen_pixel_size = _ScreenParams.xy;
+            #endif
+
+            // Angular size of a pixel
+            float2 tan_screen_angular_size = unity_CameraProjection._m00_m11; // View angles for camera https://jsantell.com/3d-projection/#projection-symmetry ; positive
+            float2 screen_angular_size = tan_screen_angular_size; // approximation
+            float2 pixel_angular_size = screen_angular_size / screen_pixel_size;
+            float min_pixel_angular_size = min(pixel_angular_size.x, pixel_angular_size.y); // use highest resolution as threshold
+            float pixel_angular_threshold = min_pixel_angular_size * 100; // pixels on screen
+            float pixel_angular_threshold_sq = pixel_angular_threshold * pixel_angular_threshold;
+
+            // Angular size of block : compute in WS ; angles should not change if the transformation is of uniform scale.
+            float3 block_center_ws = ts_to_ws._m03_m13_m23;
+            float block_distance_ws_sq = length_sq(camera_position_ws - block_center_ws);
+            float block_trangle_size_ws_sq = length_sq(ts_to_ws._m01_m11_m21); // Size of TS y, used as reference for scaling.
+            float block_angular_size_sq = block_trangle_size_ws_sq / block_distance_ws_sq; // again approximate tan(a) ~ a
+
+            // Final LOD
+            lod.level = block_angular_size_sq > pixel_angular_threshold_sq ? 0 : 1;
+            lod.ice_near_to_far = smoothstep(1, 16, pixel_angular_threshold_sq / block_angular_size_sq);
+            return lod;
         }
 
         struct DislocationAnimationConfig {
@@ -391,7 +429,7 @@ SubShader {
             }
             // Fall translation
             float3 gravity = float3(0, -3, 0); // Unity up = +Y ; heavily reduced for light flakes
-            float3 initial_velocity = random_vec.xyz * object_to_world_scale() + float3(0, 1, 0); // Add vertical bias for snow
+            float3 initial_velocity = (random_vec.xyz + float3(0, 1, 0)) * length(unity_ObjectToWorld._m00_m10_m20); // Add vertical bias for snow ; scale to avatar
             float3 translation_ws = initial_velocity * time + 0.5 * gravity * time * time;
             ts_to_os._m03_m13_m23 += mul(unity_WorldToObject, translation_ws);
         }
@@ -467,12 +505,21 @@ SubShader {
 
         UNITY_DECLARE_TEX2D(_DFG);
 
-        half3 compute_color(half3 position_ws, half3 normal_ws) {
+        half3 compute_color(half3 position_ws, half3 normal_ws, half ice_near_to_far) {
             // Ice config
-            const half3 ice_albedo = 0.1 * half3(0.4, 0.8, 1); //half3(0, 0.4, 1.0);
             const half ice_metallicity = 0;
-            const half ice_roughness = 0;
-            const half occlusion = 1;
+            const half ice_occlusion = 1;
+            
+            const half3 ice_albedo_near = 0.01 * half3(1, 1, 1);
+            const half ice_roughness_near = 0;
+
+            const half3 ice_albedo_far = 0.9 * half3(1, 1, 1);
+            const half ice_roughness_far = 0.8;
+
+            // Experiment : ; blend between transparent ice cristal if close, and opaque snow from afar. Not great :(
+            const half near_to_far = smoothstep(0, 200, length_sq(position_ws - _WorldSpaceCameraPos));
+            const half3 ice_albedo = lerp(ice_albedo_near, ice_albedo_far, ice_near_to_far);
+            const half3 ice_roughness = lerp(ice_roughness_near, ice_roughness_far, ice_near_to_far);
 
             const half3 ray_ws = normalize(position_ws - _WorldSpaceCameraPos);
 
@@ -532,9 +579,9 @@ SubShader {
 
             const half _SpecOcclusion = 0.75;
             dfg.x *= saturate(length(indirectDiffuse) * (1.0 / _SpecOcclusion));
-            indirectSpecular *= computeSpecularAO(NoV, occlusion, clampedRoughness) * EnvBRDFMultiscatter(dfg, f0);
+            indirectSpecular *= computeSpecularAO(NoV, ice_occlusion, clampedRoughness) * EnvBRDFMultiscatter(dfg, f0);
 
-            half3 pbr_surface = ice_albedo * (1 - ice_metallicity) * (indirectDiffuse * occlusion + pixelLight) + indirectSpecular + directSpecular;
+            half3 pbr_surface = ice_albedo * (1 - ice_metallicity) * (indirectDiffuse * ice_occlusion + pixelLight) + indirectSpecular + directSpecular;
 
             // Custom WIP experimental : Refracted transmittance
             half3 refracted_ray = refract(ray_ws, normal_ws, 1.3 /* water refraction index */);
@@ -586,20 +633,9 @@ SubShader {
             uint start;
             uint end;
         };
-        LodIndexes lod_indexes(uint instance_id) {
-            float3 object_origin_ws = unity_ObjectToWorld._m03_m13_m23; // Translation components https://en.wikibooks.org/wiki/Cg_Programming/Vertex_Transformations
-            #if UNITY_SINGLE_PASS_STEREO
-            float3 camera_origin_ws = 0.5 * (unity_StereoWorldSpaceCameraPos[0] + unity_StereoWorldSpaceCameraPos[1]);
-            #else
-            float3 camera_origin_ws = _WorldSpaceCameraPos;
-            #endif
-            float camera_distance_squared = length_sq(object_origin_ws - camera_origin_ws);
-
-            // Shorten distance due to higher cost, compared to the original
-            float world_distance_lod_transition = 2.5 * object_to_world_scale();
-
+        LodIndexes lod_indexes(uint instance_id, uint level) {
             LodIndexes indexes;
-            if (camera_distance_squared < (world_distance_lod_transition * world_distance_lod_transition)) {
+            if (level == 1) {
                 indexes.start = instance_id * 8;
                 indexes.end = indexes.start + 8;
             } else {
@@ -628,6 +664,8 @@ SubShader {
             animate_ts_to_os(ts_to_os, random_float3_float(snowflake_id), config.time);
             const float4x4 ts_to_ws = mul(unity_ObjectToWorld, ts_to_os);
 
+            const Lod lod = lod_level(ts_to_ws);
+
             FragmentData output;
             UNITY_INITIALIZE_OUTPUT(FragmentData, output);
             UNITY_TRANSFER_INSTANCE_ID(input[0], output);
@@ -638,16 +676,21 @@ SubShader {
             output.ts_to_ws_1 = ts_to_ws[1];
             output.ts_to_ws_2 = ts_to_ws[2];
             output.audiolink_track = audiolink.smoothed_track_threshold_01;
+            output.lod_level = lod.level;
+            output.ice_near_to_far = lod.ice_near_to_far;
 
             const float3 geometry_scale = float3(_Raymarching_Geometry_Radius_Scale * snowflake_xy_radius * float2(1, 1), snowflake_z_thickness);
-            const LodIndexes indexes = lod_indexes(instance_id);
+            const LodIndexes indexes = lod_indexes(instance_id, lod.level);
             for (uint i = indexes.start; i < indexes.end; i += 1) {
                 float3 vertex_ts = geometry_scale * baked_quad_strips[i];
                 output.geometry_ts = vertex_ts;
                 output.position_cs = mul(UNITY_MATRIX_VP, mul(ts_to_ws, float4(vertex_ts, 1)));
+                UNITY_TRANSFER_FOG(output, output.position_cs);
                 stream.Append(output);
             }
         }
+
+        uniform float _Replicator_DebugLOD;
 
         struct RenderResult {
             half4 color : SV_Target;
@@ -678,8 +721,12 @@ SubShader {
             const float3 normal_ws = normalize(cross(dy_delta, dx_delta)); // Looks good, checked with debug shading
 
             // Lighting
-            result.color = half4(compute_color(position_ws, normal_ws), 1);
+            result.color = half4(compute_color(position_ws, normal_ws, input.ice_near_to_far), 1);
             //result.color.rgb += half3(0, 0.4, 1) * input.audiolink_track * 0.5; FIXME integrate in a nicer way (lighting)
+
+            // Post processing
+            result.color = lerp(result.color, half4(1 - input.lod_level, input.lod_level, 0, 1), _Replicator_DebugLOD * 0.8);
+            UNITY_APPLY_FOG(input.fogCoord, result.color);
 
             // Depth
             const float4 pos = mul(UNITY_MATRIX_VP, float4(position_ws, 1));
