@@ -89,7 +89,7 @@ SubShader {
 
             float lod_level : LOD_LEVEL; // 0 or 1
             float ice_near_to_far : ICE_NEAR_TO_FAR;
-            float audiolink_track : AUDIOLINK_TRACK;
+            float audiolink_threshold_01 : AUDIOLINK_TRACK;
 
             UNITY_FOG_COORDS(0)
             UNITY_VERTEX_INPUT_INSTANCE_ID
@@ -180,7 +180,7 @@ SubShader {
             result.valid = false;
             result.position = front_plane_intersect; // Start point of marching. Unconditional assignement because it must be set to something for ddx/y normals.
             
-            // Cylinder barrel ; solve radius^2 = lenght_sq((camera + ray * t).xy)
+            // Cylinder barrel ; solve radius^2 = length_sq((camera + ray * t).xy)
             const float polynom_a = length_sq(ray.xy);
             const float polynom_b_div_2 = dot(camera.xy, ray.xy);
             const float polynom_c = length_sq(camera.xy) - radius_sq;
@@ -329,7 +329,7 @@ SubShader {
             float2 screen_angular_size = tan_screen_angular_size; // approximation
             float2 pixel_angular_size = screen_angular_size / screen_pixel_size;
             float min_pixel_angular_size = min(pixel_angular_size.x, pixel_angular_size.y); // use highest resolution as threshold
-            float2 pixel_angular_thresholds = min_pixel_angular_size * float2(200, 30); // pixels on screen
+            float2 pixel_angular_thresholds = min_pixel_angular_size * float2(100, 30); // pixels on screen
             float2 pixel_angular_thresholds_sq = pixel_angular_thresholds * pixel_angular_thresholds;
 
             // Angular size of block : compute in WS ; angles should not change if the transformation is of uniform scale.
@@ -507,7 +507,7 @@ SubShader {
 
         UNITY_DECLARE_TEX2D(_DFG);
 
-        half3 compute_color(half3 position_ws, half3 normal_ws, half ice_near_to_far) {
+        half3 compute_color(half3 position_ws, half3 normal_ws, half ice_near_to_far, half3 emission) {
             // Ice config
             const half ice_metallicity = 0;
             const half ice_occlusion = 1;
@@ -591,7 +591,7 @@ SubShader {
             half3 refractedSpecular = Unity_GlossyEnvironment(UNITY_PASS_TEXCUBE(unity_SpecCube0), unity_SpecCube0_HDR, envData);
             // https://en.wikipedia.org/wiki/Schlick%27s_approximation of fresnel transmittance T = 1 - R
             half3 transmittance = 1 - F_Schlick(ice_albedo, 1, dot(refracted_ray, -normal_ws));
-            return pbr_surface + transmittance * refractedSpecular;
+            return pbr_surface + transmittance * (refractedSpecular + emission);
 
             /* OLD
             const half3 ray_ws = normalize(position_ws - _WorldSpaceCameraPos);
@@ -677,7 +677,7 @@ SubShader {
             output.ts_to_ws_0 = ts_to_ws[0];
             output.ts_to_ws_1 = ts_to_ws[1];
             output.ts_to_ws_2 = ts_to_ws[2];
-            output.audiolink_track = audiolink.smoothed_track_threshold_01;
+            output.audiolink_threshold_01 = audiolink.smoothed_track_threshold_01;
             output.lod_level = lod.level;
             output.ice_near_to_far = lod.ice_near_to_far;
 
@@ -728,8 +728,11 @@ SubShader {
             const float3 normal_ws = normalize(cross(dy_delta, dx_delta)); // Looks good, checked with debug shading
 
             // Lighting
-            result.color = half4(compute_color(position_ws, normal_ws, input.ice_near_to_far), 1);
-            //result.color.rgb += half3(0, 0.4, 1) * input.audiolink_track * 0.5; FIXME integrate in a nicer way (lighting)
+            half distance_01 = length(input.geometry_ts.xy) / (_Raymarching_Geometry_Radius_Scale * snowflake_xy_radius);
+            half emission_strength = smoothstep(0, 1, input.audiolink_threshold_01 - distance_01);
+            half3 emission = emission_strength * AudioLinkData(ALPASS_THEME_COLOR0).rgb;
+
+            result.color = half4(compute_color(position_ws, normal_ws, input.ice_near_to_far, emission), 1);
 
             // Post processing
             result.color = lerp(result.color, half4(input.lod_level == float3(0, 1, 2) ? 1 : 0, 1), _Replicator_DebugLOD * 0.8);
