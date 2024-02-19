@@ -105,7 +105,7 @@ Shader "Lereldarion/EnergySurface" {
 
                 fixed3 base_color = fixed3(0.01, 0.12, 0.25);
                 float rz = dualfbm(i.uv0 * 4.); // create pattern
-                fixed3 pattern_color = pow(abs(base_color / rz), 0.99);
+                fixed3 pattern_color = saturate(pow(abs(base_color / rz), 3));
 
                 fixed4 final_color = fixed4(pattern_color, 1.);
                 UNITY_APPLY_FOG(i.fogCoord, final_color);
