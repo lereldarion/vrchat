@@ -61,6 +61,8 @@ Shader "Lereldarion/Tessellation/PhongQuad"
         [Header (Tessellation)]
         _TSL_Phong ("Phong coefficient", Range (0, 1)) = 0.5
         [Toggle (_TSL_PHONG_NORMALS_IN_VERTEX_COLOR)] _TSL_Phong_Normals_In_Vertex_Color ("Use normals in vertex Color", Float) = 0
+        _Precision_Pixel ("Precision in pixels", Range(1, 256)) = 1
+        [ToggleUI] _Show_Wireframe ("Show Wireframe", Float) = 0
     }
     SubShader {
         Tags {
@@ -80,6 +82,7 @@ Shader "Lereldarion/Tessellation/PhongQuad"
             #pragma vertex vertex_stage
             #pragma hull hull_control_point_stage
             #pragma domain domain_stage
+            #pragma geometry geometry_stage
             #pragma fragment fragment_stage
 
             #include "UnityCG.cginc"
@@ -133,6 +136,10 @@ Shader "Lereldarion/Tessellation/PhongQuad"
                 float4 pos : SV_POSITION; // CS, name required by stupid TRANSFER_SHADOW macro
                 float2 uv : TEXCOORD0;
 
+                // For WF pass
+                float3 position_ws : POSITION_WS;
+                float4 wireframe_distance_to_edge : WF_DISTANCE_TO_EDGE;
+
                 fixed3 diffuse : COLOR0;
                 fixed3 ambient : COLOR1;
                 SHADOW_COORDS(2)
@@ -142,12 +149,13 @@ Shader "Lereldarion/Tessellation/PhongQuad"
 
             // Constants
 
+            uniform fixed4 _Color;
             UNITY_DECLARE_TEX2D (_MainTexture);
             uniform float4 _MainTexture_ST; uniform float4 _MainTexture_TexelSize;
 
-            uniform fixed4 _Color;
-
             uniform float _TSL_Phong;
+            uniform float _Precision_Pixel;
+            uniform bool _Show_Wireframe;
 
             // stages
 
@@ -209,7 +217,7 @@ Shader "Lereldarion/Tessellation/PhongQuad"
                 float2 pixel_angular_size = screen_angular_size / screen_pixel_size;
                 float min_pixel_angular_size = min(pixel_angular_size.x, pixel_angular_size.y); // use highest resolution as threshold
 
-                float tessellation_level = sqrt (abs_tan_angle / min_pixel_angular_size);
+                float tessellation_level = sqrt (abs_tan_angle / (min_pixel_angular_size * _Precision_Pixel));
 
                 return clamp (tessellation_level, 1, 64);
             }
@@ -273,6 +281,10 @@ Shader "Lereldarion/Tessellation/PhongQuad"
                 float3 normal_os = UV_BARYCENTER (cp, .vertex.normal_os);
                 output.uv = UV_BARYCENTER (cp, .vertex.uv);
 
+                // Wireframe data
+                output.position_ws = mul(unity_ObjectToWorld, float4 (position_os, 1)).xyz;
+                output.wireframe_distance_to_edge = float4(0, 0, 0, 0); // Set later
+
                 // Shading
                 float3 normal_ws = UnityObjectToWorldNormal (normal_os);
                 output.diffuse = max (0, dot (normal_ws, _WorldSpaceLightPos0.xyz)) * _LightColor0.rgb;
@@ -282,18 +294,62 @@ Shader "Lereldarion/Tessellation/PhongQuad"
                 return output;
             }
 
+            [maxvertexcount(3)]
+            void geometry_stage(triangle Interpolators i[3], inout TriangleStream<Interpolators> stream)
+            {
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i[0]);
+
+                float2 p0 = i[0].pos.xy / i[0].pos.w;
+                float2 p1 = i[1].pos.xy / i[1].pos.w;
+                float2 p2 = i[2].pos.xy / i[2].pos.w;
+
+                float2 edge0 = p2 - p1;
+                float2 edge1 = p2 - p0;
+                float2 edge2 = p1 - p0;
+
+                // To find the distance to the opposite edge, we take the
+                // formula for finding the area of a triangle Area = Base/2 * Height,
+                // and solve for the Height = (Area * 2)/Base.
+                // We can get the area of a triangle by taking its cross product
+                // divided by 2.  However we can avoid dividing our area/base by 2
+                // since our cross product will already be double our area.
+                float area = abs(edge1.x * edge2.y - edge1.y * edge2.x);
+                float wireThickness = 800;
+
+                i[0].wireframe_distance_to_edge.xyz = float3( (area / length(edge0)), 0.0, 0.0) * i[0].pos.w * wireThickness;
+                i[0].wireframe_distance_to_edge.w = 1.0 / i[0].pos.w;
+                stream.Append(i[0]);
+
+                i[1].wireframe_distance_to_edge.xyz = float3(0.0, (area / length(edge1)), 0.0) * i[1].pos.w * wireThickness;
+                i[1].wireframe_distance_to_edge.w = 1.0 / i[1].pos.w;
+                stream.Append(i[1]);
+
+                i[2].wireframe_distance_to_edge.xyz = float3(0.0, 0.0, (area / length(edge2))) * i[2].pos.w * wireThickness;
+                i[2].wireframe_distance_to_edge.w = 1.0 / i[2].pos.w;
+                stream.Append(i[2]);
+            }
+
             fixed4 fragment_stage (Interpolators input) : SV_Target {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX (input);
 
-                // TODO lighting
+                // Basic lighting
                 fixed4 albedo = UNITY_SAMPLE_TEX2D (_MainTexture, input.uv) * _Color;
-                return albedo * fixed4 (input.diffuse * SHADOW_ATTENUATION (input) + input.ambient, 1.);
+                fixed4 color = albedo * fixed4 (input.diffuse * SHADOW_ATTENUATION (input) + input.ambient, 1.);
+
+                // Wireframe
+                float4 packed_dist = input.wireframe_distance_to_edge;
+                float minDistanceToEdge = min(packed_dist[0], min(packed_dist[1], packed_dist[2])) * packed_dist[3];
+                if (_Show_Wireframe && minDistanceToEdge < 0.9) {
+                    float t = exp2(-2 * minDistanceToEdge * minDistanceToEdge);
+                    float cameraToVertexDistance = length(_WorldSpaceCameraPos - input.position_ws);
+                    fixed4 wireColor = fixed4(0, 0, 0, 1);
+                    color = lerp(color, wireColor, t);
+                }
+                return color;
             }
 
             ENDCG
         }
 
     }
-    
-    Fallback "Diffuse" // FIXME use tesselation with lesser precision criteria ?
 }
