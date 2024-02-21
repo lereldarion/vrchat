@@ -137,7 +137,7 @@ Shader "Lereldarion/Tessellation/PhongQuad"
                 float2 uv : TEXCOORD0;
 
                 // For WF pass
-                float3 position_ws : POSITION_WS;
+                float3 camera_to_position_ws : CAMERA_TO_POSITION_WS;
                 float4 wireframe_distance_to_edge : WF_DISTANCE_TO_EDGE;
 
                 fixed3 diffuse : COLOR0;
@@ -188,6 +188,14 @@ Shader "Lereldarion/Tessellation/PhongQuad"
                 return output;
             }
 
+            float3 camera_ws() {
+                #if UNITY_SINGLE_PASS_STEREO
+                return 0.5 * (unity_StereoWorldSpaceCameraPos[0] + unity_StereoWorldSpaceCameraPos[1]); // Avoid eye inconsistency, take center;
+                #else
+                return _WorldSpaceCameraPos;
+                #endif
+            }
+
             float edge_tessellation_factor (const TessellationVertexData p0, const TessellationVertexData p1) {
                 float3 p0p1_os = p1.position_os - p0.position_os;
                 float3 d01_os = dot (p0p1_os, p1.phong_normal_os) * p1.phong_normal_os - dot (p0p1_os, p0.phong_normal_os) * p0.phong_normal_os;
@@ -195,7 +203,7 @@ Shader "Lereldarion/Tessellation/PhongQuad"
 
                 // Measure angular size of max phong displacement from camera viewpoint.
                 // Easier in view space, but world space is cheaper. World to view space should have uniform scaling.
-                float3 eye_to_center_p0p1_ws = mul (unity_ObjectToWorld, float4 (center_p0p1_os, 1)).xyz - _WorldSpaceCameraPos;
+                float3 eye_to_center_p0p1_ws = mul (unity_ObjectToWorld, float4 (center_p0p1_os, 1)).xyz - camera_ws();
                 float3 max_phong_ws = mul ((float3x3) unity_ObjectToWorld, 0.25 * _TSL_Phong * d01_os); // Vector, not position, so ignore translations
 
                 // Approximate angle by using tan(angle) = |max_phong projected on eye dir plane| / eye_distance
@@ -282,7 +290,7 @@ Shader "Lereldarion/Tessellation/PhongQuad"
                 output.uv = UV_BARYCENTER (cp, .vertex.uv);
 
                 // Wireframe data
-                output.position_ws = mul(unity_ObjectToWorld, float4 (position_os, 1)).xyz;
+                output.camera_to_position_ws = mul(unity_ObjectToWorld, float4 (position_os, 1)).xyz - camera_ws();
                 output.wireframe_distance_to_edge = float4(0, 0, 0, 0); // Set later
 
                 // Shading
@@ -341,7 +349,7 @@ Shader "Lereldarion/Tessellation/PhongQuad"
                 float minDistanceToEdge = min(packed_dist[0], min(packed_dist[1], packed_dist[2])) * packed_dist[3];
                 if (_Show_Wireframe && minDistanceToEdge < 0.9) {
                     float t = exp2(-2 * minDistanceToEdge * minDistanceToEdge);
-                    float cameraToVertexDistance = length(_WorldSpaceCameraPos - input.position_ws);
+                    float cameraToVertexDistance = length(input.camera_to_position_ws);
                     fixed4 wireColor = fixed4(0, 0, 0, 1);
                     color = lerp(color, wireColor, t);
                 }

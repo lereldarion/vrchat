@@ -149,7 +149,7 @@ Shader "Lereldarion/Tessellation/PnQuadLinear"
                 float2 uv : TEXCOORD0;
 
                 // For WF pass
-                float3 position_ws : POSITION_WS;
+                float3 camera_to_position_ws : CAMERA_TO_POSITION_WS;
                 float4 wireframe_distance_to_edge : WF_DISTANCE_TO_EDGE;
 
                 fixed3 diffuse : COLOR0;
@@ -198,6 +198,14 @@ Shader "Lereldarion/Tessellation/PnQuadLinear"
                 return output;
             }
 
+            float3 camera_ws() {
+                #if UNITY_SINGLE_PASS_STEREO
+                return 0.5 * (unity_StereoWorldSpaceCameraPos[0] + unity_StereoWorldSpaceCameraPos[1]); // Avoid eye inconsistency, take center;
+                #else
+                return _WorldSpaceCameraPos;
+                #endif
+            }
+
             [domain ("quad")]
             [outputcontrolpoints (4)]
             [outputtopology ("triangle_cw")]
@@ -233,7 +241,7 @@ Shader "Lereldarion/Tessellation/PnQuadLinear"
                 float angular_precision = min_pixel_angular_size * _Precision_Pixel;
 
                 // Tessellation factor
-                float3 eye_dir_ws = 0.5 * (v0.position_ws + v1.position_ws) - _WorldSpaceCameraPos;
+                float3 eye_dir_ws = 0.5 * (v0.position_ws + v1.position_ws) - camera_ws();
                 float inv_eye_dist2 = 1. / norm2 (eye_dir_ws);
 
                 float3 d01_proj = output.d01_ws - inv_eye_dist2 * dot (output.d01_ws, eye_dir_ws) * eye_dir_ws;
@@ -270,7 +278,6 @@ Shader "Lereldarion/Tessellation/PnQuadLinear"
                 return factors;
             }
 
-
             [domain ("quad")]
             Interpolators domain_stage (const TessellationFactors factors, const OutputPatch<TessellationControlPoint, 4> cp, float2 uv : SV_DomainLocation) {
                 Interpolators output;
@@ -296,7 +303,7 @@ Shader "Lereldarion/Tessellation/PnQuadLinear"
                 output.uv = UV_BARYCENTER (cp, .vertex.uv);
 
                 // Wireframe data
-                output.position_ws = position_ws;
+                output.camera_to_position_ws = position_ws - camera_ws();
                 output.wireframe_distance_to_edge = float4(0, 0, 0, 0); // Set later
 
                 // Shading
@@ -354,7 +361,7 @@ Shader "Lereldarion/Tessellation/PnQuadLinear"
                 float minDistanceToEdge = min(packed_dist[0], min(packed_dist[1], packed_dist[2])) * packed_dist[3];
                 if (_Show_Wireframe && minDistanceToEdge < 0.9) {
                     float t = exp2(-2 * minDistanceToEdge * minDistanceToEdge);
-                    float cameraToVertexDistance = length(_WorldSpaceCameraPos - input.position_ws);
+                    float cameraToVertexDistance = length(input.camera_to_position_ws);
                     fixed4 wireColor = fixed4(0, 0, 0, 1);
                     color = lerp(color, wireColor, t);
                 }
