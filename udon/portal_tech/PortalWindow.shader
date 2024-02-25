@@ -32,6 +32,7 @@ Shader "Lereldarion/PortalWindow" {
                 float3 uvx_os : UVX;
                 float3 uvy_os : UVY;
                 float3 camera_to_geometry_os : VIEW_VECTOR;
+                float uv_blend_factor : UV_BLEND_FACTOR;
                 float2 uv : TEXCOORD0;
                 UNITY_FOG_COORDS(1)
             };
@@ -43,25 +44,36 @@ Shader "Lereldarion/PortalWindow" {
             uniform float _TimerEnd;
             //uniform float _TimerTest;
 
+            float3 camera_ws() {
+                #if UNITY_SINGLE_PASS_STEREO
+                return 0.5 * (unity_StereoWorldSpaceCameraPos[0] + unity_StereoWorldSpaceCameraPos[1]); // Avoid eye inconsistency, take center;
+                #else
+                return _WorldSpaceCameraPos;
+                #endif
+            }
+
             v2f vert (appdata i) {
                 v2f o;
                 o.vertex = UnityObjectToClipPos(i.vertex);
-                o.uv = TRANSFORM_TEX(i.uv, _WorldTex);
+                o.uv = i.uv;
                 UNITY_TRANSFER_FOG(o, o.vertex);
 
                 o.uvx_os = i.tangent;
                 o.uvy_os = normalize(cross(i.tangent, i.normal) * i.tangent.w * -1);
                 o.camera_to_geometry_os = -ObjSpaceViewDir(i.vertex);
+
+                float3 object_base_ws = unity_ObjectToWorld._m03_m13_m23;
+                o.uv_blend_factor = smoothstep(3, 15, distance(object_base_ws, camera_ws()));
                 return o;
             }
 
             fixed4 frag (v2f i) : SV_Target {
                 float3 view_ray = normalize(i.camera_to_geometry_os);
-                float2 projections = float2(
+                float2 projection_uv = 0.5 + 0.5 * float2(
                     dot(view_ray, i.uvx_os),
                     dot(view_ray, i.uvy_os)
                 );
-                fixed4 final_color = tex2D(_WorldTex, projections * 0.5 + 0.5);
+                fixed4 final_color = tex2D(_WorldTex, lerp(projection_uv, i.uv, i.uv_blend_factor));
 
                 float time_remaining_01 = saturate((_TimerEnd - _Time.y) / _TimerRange);
                 //if(_TimerTest > 0) { time_remaining_01 = _TimerTest; }
@@ -77,11 +89,12 @@ Shader "Lereldarion/PortalWindow" {
                 final_color.rgb = lerp(grayscale_color, final_color.rgb, color_fraction);
 
                 // Oval cutoff
+                const float cutoff_transition = 0.1;
                 float2 centered_uv = i.uv - 0.5;
                 float pixel_oval_radius_sq = dot(centered_uv, centered_uv);
-                float cutoff_radius_one_dimension = visible_fraction * 0.5;
+                float cutoff_radius_one_dimension = visible_fraction * (0.5 + cutoff_transition);
                 float cutoff_radius_sq = 2 * cutoff_radius_one_dimension * cutoff_radius_one_dimension; // (0.5 * frac)^2 * 2
-                final_color.rgb *= smoothstep(0, 0.1, cutoff_radius_sq - pixel_oval_radius_sq);
+                final_color.rgb *= smoothstep(0, cutoff_transition, cutoff_radius_sq - pixel_oval_radius_sq);
 
                 UNITY_APPLY_FOG(i.fogCoord, final_color);
                 return final_color;

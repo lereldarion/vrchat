@@ -24,20 +24,20 @@ namespace Lereldarion.PortalTech {
     [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
     public class WorldController : UdonSharpBehaviour {
         [Header("Debug UI")]
-        public TextMeshProUGUI debug_display;
-        public Material debug_quad_material;
+        [SerializeField] TextMeshProUGUI debug_display;
+        [SerializeField] Material debug_quad_material;
 
         [Header("Static portal")]
-        public VRCPortalMarker static_portal_marker; // Used by analyzer, or persistence test. Not needed for Hooks
+        [SerializeField] VRCPortalMarker static_portal_marker; // Used by analyzer, or persistence test. Not needed for Hooks
 
         [Header("Mesh persistent storage")]
-        public TextMeshProUGUI persistence_message;
+        [SerializeField] TextMeshProUGUI persistence_message;
 
         [Header("Dynamic Portal Hooks")]
         private bool config_relocate = false;
-        public Transform relocation_target;
+        [SerializeField] Transform relocation_target;
         private bool config_reskin = false;
-        public GameObject replacement_skin;
+        [SerializeField] GameObject replacement_skin;
         private bool config_debug = false;
 
         void Start() {            

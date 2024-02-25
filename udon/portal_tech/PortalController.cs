@@ -15,8 +15,8 @@ namespace Lereldarion.PortalTech {
     // Expects to be installed on the portal reskin object (child of the portal root), and enabled to start operations
     [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
     public class PortalController : UdonSharpBehaviour {
-        public TextMeshProUGUI debug_display;
-        public Material debug_quad_material;
+        [SerializeField] TextMeshProUGUI debug_display;
+        [SerializeField] Material debug_quad_material;
 
         private MeshRenderer portal_renderer;
         private bool debug = false;
@@ -57,8 +57,9 @@ namespace Lereldarion.PortalTech {
 
             replacement.SetParent(portal_root, false);
 
-            var script = (UdonBehaviour) replacement_object.GetComponent(typeof(UdonBehaviour));
-            script.SetProgramVariable("debug", debug);
+            var script = replacement_object.GetComponent<PortalController>();
+            script.debug = debug;
+            //script.SetProgramVariable("debug", debug);
 
             // Fix collider bounds to match new portal
             Bounds mesh_bound_ws = replacement_object.GetComponent<MeshRenderer>().bounds;
