@@ -14,8 +14,8 @@ using VRC.Udon;
 // The new Font Asset can then be used in any TextMeshPro Text field and configured to whatever color shceme you need.
 // 
 // Finally, attach the following UdonSharp component to the special reveal spotlight, and add the Material in the Font Asset to the text_mesh_pro_reveal field.
-// The script can detect if the light is disabled (sets the range as 0).
-// Disabling the script will stop revealing text.
+// Disabling the script or the light will stop revealing text.
+// Disabling the gameobject stops updating anything (like if light is stuck in the current state).
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class SpotLightConfigToRevealMat : UdonSharpBehaviour {
     [SerializeField] Material text_mesh_pro_reveal;
@@ -26,15 +26,10 @@ public class SpotLightConfigToRevealMat : UdonSharpBehaviour {
     }
 
     void Update() {
-        bool light_on = spot_light.enabled;
+        bool light_on = spot_light.enabled && enabled;
         text_mesh_pro_reveal.SetVector("_MyLightPosition",  spot_light.transform.position);
         text_mesh_pro_reveal.SetVector("_MyLightDirection", spot_light.transform.forward);
         text_mesh_pro_reveal.SetFloat("_MyLightAngleCos", Mathf.Cos(spot_light.spotAngle * (3.14f/360f)));
         text_mesh_pro_reveal.SetFloat("_MyLightRange", light_on ? spot_light.range : 0);
-    }
-
-    void OnDisable() {
-        // Kill the reveal zone if the script is disabled
-        text_mesh_pro_reveal.SetFloat("_MyLightRange", 0);
     }
 }
