@@ -1,5 +1,6 @@
 ﻿
 using UdonSharp;
+using UnityEngine;
 using UnityEngine.UI;
 using VRC.SDKBase;
 using VRC.Udon;
@@ -7,7 +8,7 @@ using VRC.Udon;
 // Attach to a UI Toggle, an make bool variable
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class BoolFollowToggle : UdonSharpBehaviour {
-    public UdonBehaviour update_target;
+    [SerializeField] UdonBehaviour update_target;
     private Toggle self_toggle;
 
     void Start() {
