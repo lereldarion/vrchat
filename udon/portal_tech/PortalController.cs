@@ -29,8 +29,8 @@ namespace Lereldarion.PortalTech {
         private float current_timer_end;
 
         // "Constructor". We cannot create components, but we can instantiate a disabled object with components.
-        static public void Reskin(Transform portal_root, GameObject replacement_object_source, bool debug) {
-            GameObject replacement_object = Instantiate(replacement_object_source);
+        static public void Reskin(Transform portal_root, GameObject template, bool debug) {
+            GameObject replacement_object = Instantiate(template);
             Transform replacement = replacement_object.transform;
  
             // Make existing portal elements invisible but keep them active for async loading.
@@ -59,13 +59,12 @@ namespace Lereldarion.PortalTech {
 
             var script = replacement_object.GetComponent<PortalController>();
             script.debug = debug;
-            //script.SetProgramVariable("debug", debug);
 
             // Fix collider bounds to match new portal
-            Bounds mesh_bound_ws = replacement_object.GetComponent<MeshRenderer>().bounds;
+            Bounds mesh_bound_os = replacement_object.GetComponent<MeshRenderer>().localBounds;
             BoxCollider collider = portal_root.GetComponent<BoxCollider>();
-            collider.center = portal_root.InverseTransformPoint(mesh_bound_ws.center);
-            collider.size = portal_root.InverseTransformVector(mesh_bound_ws.size);
+            collider.center = portal_root.InverseTransformPoint(replacement.TransformPoint(mesh_bound_os.center));
+            collider.size = portal_root.InverseTransformVector(replacement.TransformVector(mesh_bound_os.size));
 
             replacement_object.SetActive(true); // Reenable disabled object, and will call start
         }

@@ -34,11 +34,13 @@ namespace Lereldarion.PortalTech {
         [SerializeField] TextMeshProUGUI persistence_message;
 
         [Header("Dynamic Portal Hooks")]
+        private bool config_reskin = false;
+        [SerializeField] GameObject reskin_template;
         private bool config_relocate = false;
         [SerializeField] Transform relocation_target;
-        private bool config_reskin = false;
-        [SerializeField] GameObject replacement_skin;
         private bool config_debug = false;
+        private bool config_collider_ghost = false;
+        [SerializeField] GameObject collider_ghost_template;
 
         void Start() {            
             // Wait for portal marker to setup the portal mesh reference.
@@ -58,7 +60,7 @@ namespace Lereldarion.PortalTech {
         }
 
         // Collider detects probable portal
-        public void OnTriggerEnter(Collider new_source) {
+        void OnTriggerEnter(Collider new_source) {
             // Ignore static portal
             if(new_source.transform.name == "PortalInternal(Clone)") {
                 return;
@@ -75,7 +77,18 @@ namespace Lereldarion.PortalTech {
                 }
 
                 if(config_reskin) {
-                    PortalController.Reskin(new_portal_root, replacement_skin, config_debug);
+                    PortalController.Reskin(new_portal_root, reskin_template, config_debug);
+                }
+
+                if(config_collider_ghost) {
+                    GameObject ghost = Instantiate(collider_ghost_template, new_portal_root, false);
+
+                    BoxCollider collider = new_portal_root.GetComponent<BoxCollider>();
+                    ghost.transform.localPosition = collider.center;
+                    ghost.transform.localScale = collider.size;
+    
+                    // I initially tried to remove the collider but it does not work
+                    ghost.SetActive(true);
                 }
 
                 if (config_debug) {
@@ -117,6 +130,9 @@ namespace Lereldarion.PortalTech {
         // For now very basic proof of concept, just store visit counter.
         public void RunPersistenceMessageHook() {
             Transform portal_core = static_portal_marker.transform.Find("PortalInternal(Clone)/PortalGraphics/PortalCore");
+            if(portal_core == null) {
+                return; // ClientSim
+            }
             Mesh persistent_mesh = portal_core.GetComponent<MeshFilter>().sharedMesh;
 
             // Unpack data
