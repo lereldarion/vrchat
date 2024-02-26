@@ -53,11 +53,12 @@ Properties {
 	_ColorMask			("Color Mask", Float) = 15
 
 	// SpotLightReveal properties
-	_MyLightPosition ("Spot light world position", Vector) = (0, 0, 0, 1)
-	_MyLightDirection ("Spot light world direction", Vector) = (0, 0, 0, 1)
-	_MyLightAngleCos ("Spot light angle cos", Float) = -1
-	_MyLightRange ("Spot light range world space", Float) = 10000000
-	_MyLightAngleTransitionZone ("Spot light transition zone", Range(0, 1)) = 0.002 // usually set statically
+	_RevealLightPosition ("Reveal spotlight world position", Vector) = (0, 0, 0, 1)
+	_RevealLightDirection ("Reveal spotlight world direction normalized", Vector) = (0, 0, 0, 1)
+	_RevealLightAngleCos ("Reveal spotlight angle cos", Float) = -1
+	_RevealLightRange ("Reveal spotlight range world space", Float) = 10000000
+	// Simulates Light Attenuation from spotlight lighting border ; not perfect but good approximation
+	_RevealLightAngleTransitionZone ("Reveal spotlight transition zone (cos angle)", Range(0, 1)) = 0.025
 }
 
 SubShader {
@@ -201,11 +202,11 @@ SubShader {
 			return output;
 		}
 
-		uniform float3 _MyLightPosition;
-		uniform float3 _MyLightDirection;
-		uniform float _MyLightAngleCos;
-		uniform float _MyLightRange;
-		uniform float _MyLightAngleTransitionZone;
+		uniform float3 _RevealLightPosition;
+		uniform float3 _RevealLightDirection;
+		uniform float _RevealLightAngleCos;
+		uniform float _RevealLightRange;
+		uniform float _RevealLightAngleTransitionZone;
 
 		// PIXEL SHADER
 		fixed4 PixShader(pixel_t input) : SV_Target
@@ -242,12 +243,12 @@ SubShader {
 			#endif
 
 			// SpotLightReveal : Cone intersect in world space
-			float3 light_ray = input.position_ws - _MyLightPosition;
+			float3 light_ray = input.position_ws - _RevealLightPosition;
 			float light_distance = length(light_ray);
 			float3 light_dir = light_ray / light_distance;
-			float cos_ray_to_spotlight = dot(light_dir, _MyLightDirection);
-			float alpha_scale = smoothstep(-_MyLightAngleTransitionZone, _MyLightAngleTransitionZone, cos_ray_to_spotlight - _MyLightAngleCos);
-			if(light_distance > _MyLightRange) { alpha_scale = 0; }
+			float cos_ray_to_spotlight = dot(light_dir, _RevealLightDirection);
+			float alpha_scale = smoothstep(0, _RevealLightAngleTransitionZone, cos_ray_to_spotlight - _RevealLightAngleCos);
+			if(light_distance > _RevealLightRange) { alpha_scale = 0; }
 			c.a *= alpha_scale;
 
 			#if UNITY_UI_ALPHACLIP

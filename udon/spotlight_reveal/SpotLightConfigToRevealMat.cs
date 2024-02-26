@@ -14,22 +14,32 @@ using VRC.Udon;
 // The new Font Asset can then be used in any TextMeshPro Text field and configured to whatever color shceme you need.
 // 
 // Finally, attach the following UdonSharp component to the special reveal spotlight, and add the Material in the Font Asset to the text_mesh_pro_reveal field.
-// Disabling the script or the light will stop revealing text.
-// Disabling the gameobject stops updating anything (like if light is stuck in the current state).
+// Disabling the script, the light, or the gameobject will stop revealing text.
 [UdonBehaviourSyncMode(BehaviourSyncMode.None)]
 public class SpotLightConfigToRevealMat : UdonSharpBehaviour {
     [SerializeField] Material text_mesh_pro_reveal;
     private Light spot_light;
+
+    private bool reveal_enabled = false; // cache for component.enabled && gameobject.isActive
 
     void Start() {
         spot_light = GetComponent<Light>();
     }
 
     void Update() {
-        bool light_on = spot_light.enabled && enabled;
-        text_mesh_pro_reveal.SetVector("_MyLightPosition",  spot_light.transform.position);
-        text_mesh_pro_reveal.SetVector("_MyLightDirection", spot_light.transform.forward);
-        text_mesh_pro_reveal.SetFloat("_MyLightAngleCos", Mathf.Cos(spot_light.spotAngle * (3.14f/360f)));
-        text_mesh_pro_reveal.SetFloat("_MyLightRange", light_on ? spot_light.range : 0);
+        bool reveal = spot_light.enabled && reveal_enabled;
+        text_mesh_pro_reveal.SetVector("_RevealLightPosition",  spot_light.transform.position);
+        text_mesh_pro_reveal.SetVector("_RevealLightDirection", spot_light.transform.forward);
+        text_mesh_pro_reveal.SetFloat("_RevealLightAngleCos", Mathf.Cos(spot_light.spotAngle * (3.14f/360f)));
+        text_mesh_pro_reveal.SetFloat("_RevealLightRange", reveal ? spot_light.range : 0);
+    }
+
+    // These fire for either component or object status change, more reliable than individual flags
+    void OnEnable() {
+        reveal_enabled = true;
+    }
+    void OnDisable() {
+        reveal_enabled = false;
+        text_mesh_pro_reveal.SetFloat("_RevealLightRange", 0);
     }
 }
