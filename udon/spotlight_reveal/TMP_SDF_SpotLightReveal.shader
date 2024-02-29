@@ -247,9 +247,9 @@ SubShader {
 			float light_distance = length(light_ray);
 			float3 light_dir = light_ray / light_distance;
 			float cos_ray_to_spotlight = dot(light_dir, _RevealLightDirection);
-			float alpha_scale = smoothstep(0, _RevealLightAngleTransitionZone, cos_ray_to_spotlight - _RevealLightAngleCos);
-			if(light_distance > _RevealLightRange) { alpha_scale = 0; }
-			c.a *= alpha_scale;
+			float reveal_alpha = smoothstep(0, _RevealLightAngleTransitionZone, cos_ray_to_spotlight - _RevealLightAngleCos);
+			reveal_alpha *= smoothstep(0, 0.1 * _RevealLightRange, _RevealLightRange - light_distance);
+			c *= reveal_alpha;
 
 			#if UNITY_UI_ALPHACLIP
 			clip(c.a - 0.001);
