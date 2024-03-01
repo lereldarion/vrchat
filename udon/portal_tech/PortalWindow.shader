@@ -25,6 +25,7 @@ Shader "Lereldarion/PortalWindow" {
                 float3 normal : NORMAL;
                 float4 tangent : TANGENT;
                 float2 uv : TEXCOORD0;
+                UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
             struct v2f {
@@ -35,6 +36,7 @@ Shader "Lereldarion/PortalWindow" {
                 float uv_blend_factor : UV_BLEND_FACTOR;
                 float2 uv : TEXCOORD0;
                 UNITY_FOG_COORDS(1)
+                UNITY_VERTEX_OUTPUT_STEREO
             };
 
             uniform sampler2D _WorldTex;
@@ -52,28 +54,31 @@ Shader "Lereldarion/PortalWindow" {
                 #endif
             }
 
-            v2f vert (appdata i) {
-                v2f o;
-                o.vertex = UnityObjectToClipPos(i.vertex);
-                o.uv = i.uv;
-                UNITY_TRANSFER_FOG(o, o.vertex);
+            v2f vert (appdata input) {
+                UNITY_SETUP_INSTANCE_ID(input);
+                v2f output;
+                output.vertex = UnityObjectToClipPos(input.vertex);
+                output.uv = input.uv;
+                UNITY_TRANSFER_FOG(output, output.vertex);
+                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
 
-                o.uvx_os = i.tangent;
-                o.uvy_os = normalize(cross(i.tangent, i.normal) * i.tangent.w * -1);
-                o.camera_to_geometry_os = -ObjSpaceViewDir(i.vertex);
+                output.uvx_os = input.tangent;
+                output.uvy_os = normalize(cross(input.tangent, input.normal) * input.tangent.w * -1);
+                output.camera_to_geometry_os = -ObjSpaceViewDir(input.vertex);
 
                 float3 object_base_ws = unity_ObjectToWorld._m03_m13_m23;
-                o.uv_blend_factor = smoothstep(3, 15, distance(object_base_ws, camera_ws()));
-                return o;
+                output.uv_blend_factor = smoothstep(3, 15, distance(object_base_ws, camera_ws()));
+                return output;
             }
 
-            fixed4 frag (v2f i) : SV_Target {
-                float3 view_ray = normalize(i.camera_to_geometry_os);
+            fixed4 frag (v2f input) : SV_Target {
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
+                float3 view_ray = normalize(input.camera_to_geometry_os);
                 float2 projection_uv = 0.5 + 0.5 * float2(
-                    dot(view_ray, i.uvx_os),
-                    dot(view_ray, i.uvy_os)
+                    dot(view_ray, input.uvx_os),
+                    dot(view_ray, input.uvy_os)
                 );
-                fixed4 final_color = tex2D(_WorldTex, lerp(projection_uv, i.uv, i.uv_blend_factor));
+                fixed4 final_color = tex2D(_WorldTex, lerp(projection_uv, input.uv, input.uv_blend_factor));
 
                 float time_remaining_01 = saturate((_TimerEnd - _Time.y) / _TimerRange);
                 //if(_TimerTest > 0) { time_remaining_01 = _TimerTest; }
@@ -90,13 +95,13 @@ Shader "Lereldarion/PortalWindow" {
 
                 // Oval cutoff
                 const float cutoff_transition = 0.1;
-                float2 centered_uv = i.uv - 0.5;
+                float2 centered_uv = input.uv - 0.5;
                 float pixel_oval_radius_sq = dot(centered_uv, centered_uv);
                 float cutoff_radius_one_dimension = visible_fraction * (0.5 + cutoff_transition);
                 float cutoff_radius_sq = 2 * cutoff_radius_one_dimension * cutoff_radius_one_dimension; // (0.5 * frac)^2 * 2
                 final_color.rgb *= smoothstep(0, cutoff_transition, cutoff_radius_sq - pixel_oval_radius_sq);
 
-                UNITY_APPLY_FOG(i.fogCoord, final_color);
+                UNITY_APPLY_FOG(input.fogCoord, final_color);
                 return final_color;
             }
             ENDCG

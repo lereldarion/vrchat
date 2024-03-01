@@ -1,0 +1,195 @@
+%ShaderName("Lereldarion/ParallaxEngraving")
+%CustomEditor("ORL.ShaderInspector.InspectorGUI")
+
+%Properties()
+{
+    UI_MainHeader("# Main PBR material", Int) = 1
+    _MainTex("Albedo", 2D) = "white" {}
+    [NoScaleOffset] _MaskMap("R=Height|G=AO|B=Smoothness", 2D) = "white" { }
+    [NoScaleOffset] _BumpMap("Normal Map >", 2D) =  "bump" { }
+
+    _HeightScale("Parallax Height Scale", Range(0, 0.1)) = 0.006
+    _HeightRefPlane("Parallax Height Ref Plane", Range(-1, 1)) = 0.5
+    _HeightStepsMin("Parallax Steps Min", Range(8, 32)) = 8
+    _HeightStepsMax("Parallax Steps Max", Range(8, 32)) = 16
+    // TODO parralax config
+    
+    UI_EngravingHeader("# Engraving", Int) = 1
+    _EngravingMask("Mask (R)", 2D) = "black" {}
+    _EngravingScale("Scale", Range(-1, 1)) = 0
+    _EngravingAlbedo("Albedo", Color) = (1, 1, 1, 1)
+    _EngravingMetallicity("Metallicity", Range(0, 1)) = 1
+    _EngravingSmoothness("Smoothness", Range(0, 1)) = 1
+    _EngravingOcclusion("Occlusion", Range(0, 1)) = 1
+}
+
+%Variables()
+{
+    half4 _MainTex_ST;
+
+    half _HeightScale;
+    half _HeightRefPlane;
+    half _HeightStepsMin;
+    half _HeightStepsMax;
+
+    half4 _EngravingMask_ST;
+    half4 _EngravingMask_TexelSize;
+
+    half _EngravingScale;
+    half3 _EngravingAlbedo;
+    half _EngravingMetallicity;
+    half _EngravingSmoothness;
+    half _EngravingOcclusion;
+}
+
+%Textures()
+{
+    TEXTURE2D(_MainTex);
+    SAMPLER(sampler_MainTex);
+    TEXTURE2D(_MaskMap);
+    SAMPLER(sampler_MaskMap);
+    TEXTURE2D(_BumpMap);
+    SAMPLER(sampler_BumpMap);
+    TEXTURE2D(_EngravingMask);
+    SAMPLER(sampler_EngravingMask);
+}
+
+%Fragment("ParallaxEngravingFragment")
+{
+    // Setup : both tiling PBR texture and the engraving mask use uv0.
+    //
+    // The engraving mask uses uv0 clamped to [0,1] to simulate a detail map for the text.
+    // uv0 is scaled heterogenously to maximize texture space where details are required (text), and relies on clamp to compact everything else.
+    // Stretch = (2.73, 21.9) in the portal case.
+    //
+    // The PBR texture is tiled on uv0, with tiling factors used to undo the detail stretch.
+    // Parallax must iterate on the same set of uvs ; tiled pbr UVs are used, and detail uvs inferred from them.
+    struct UvConfig {
+        // Amplify parrallax page recommends using the original uv gradients to avoid artefacts ; store them here
+        // https://wiki.amplify.pt/index.php?title=Unity_Products:Amplify_Shader_Editor/Parallax_Occlusion_Mapping
+        half4 main_grad;
+        half4 engraving_grad;
+
+        half4 main_to_engraving_ST;
+
+        half4 sample_main(Texture2D tex, SamplerState state, half2 main_uv) {
+            return SAMPLE_TEXTURE2D_GRAD(tex, state, main_uv, main_grad.xy, main_grad.zw);
+        }
+        half sample_engraving_mask(half2 main_uv) {
+            return SAMPLE_TEXTURE2D_GRAD(_EngravingMask, sampler_EngravingMask, main_uv * main_to_engraving_ST.xy + main_to_engraving_ST.zw, engraving_grad.xy, engraving_grad.zw).r;
+        }
+        half3 sample_engraving_mask_with_derivatives(half2 main_uv) {
+            half2 uv = main_uv * main_to_engraving_ST.xy + main_to_engraving_ST.zw;
+            half center = SAMPLE_TEXTURE2D_GRAD(_EngravingMask, sampler_EngravingMask, uv, engraving_grad.xy, engraving_grad.zw).r;
+            half shift_x = SAMPLE_TEXTURE2D_GRAD(_EngravingMask, sampler_EngravingMask, uv + half2(_EngravingMask_TexelSize.x, 0), engraving_grad.xy, engraving_grad.zw).r;
+            half shift_y = SAMPLE_TEXTURE2D_GRAD(_EngravingMask, sampler_EngravingMask, uv + half2(0, _EngravingMask_TexelSize.y), engraving_grad.xy, engraving_grad.zw).r;
+            half2 derivatives = (half2(shift_x, shift_y) - center) * _EngravingMask_TexelSize.zw; // ddxy/dduv, dduv = TexelSize.xy, 1/dduv = TexelSize.zw
+            return half3(center, derivatives);
+        }
+
+        half sample_height(half2 main_uv) {
+            half main = sample_main(_MaskMap, sampler_MaskMap, main_uv).r;
+            half engraving = sample_engraving_mask(main_uv);
+            return main + engraving * _EngravingScale;
+        }
+    };
+    UvConfig uv_config(half2 base_uv) {
+        UvConfig config;
+
+        half4 gradients = half4(ddx(base_uv), ddy(base_uv));
+        config.main_grad = gradients * _MainTex_ST.xyxy;
+        config.engraving_grad = gradients * _EngravingMask_ST.xyxy;
+        
+        config.main_to_engraving_ST = half4(
+            _EngravingMask_ST.xy / _MainTex_ST.xy,
+            -_MainTex_ST.zw / _MainTex_ST.xy + _EngravingMask_ST.zw
+        );
+        return config;
+    }
+
+    half2 ParallaxOffsetUVs(
+        UvConfig config, half2 main_uv,
+        half3 normalWorld, half3 viewWorld, half3 viewDirTan,
+        int minSamples, int maxSamples, half parallax, half refPlane
+    ) {
+        int stepIndex = 0;
+        int numSteps = (int) lerp((half) maxSamples, (half) minSamples, saturate(dot(normalWorld, viewWorld)));
+        half layerHeight = 1.0 / numSteps;
+        half2 plane = parallax * (viewDirTan.xy / viewDirTan.z);
+        main_uv += refPlane * plane;
+        half2 deltaTex = -plane * layerHeight;
+        half2 prevTexOffset = 0;
+        half prevRayZ = 1.0f;
+        half prevHeight = 0.0f;
+        half2 currTexOffset = deltaTex;
+        half currRayZ = 1.0f - layerHeight;
+        half currHeight = 0.0f;
+        half intersection = 0;
+        half2 finalTexOffset = 0;
+        while (stepIndex < numSteps + 1) {
+            currHeight = config.sample_height(main_uv + currTexOffset);
+            if (currHeight > currRayZ) {
+                stepIndex = numSteps + 1;
+            } else {
+                stepIndex++;
+                prevTexOffset = currTexOffset;
+                prevRayZ = currRayZ;
+                prevHeight = currHeight;
+                currTexOffset += deltaTex;
+                currRayZ -= layerHeight;
+            }
+        }
+        int sectionSteps = 2;
+        int sectionIndex = 0;
+        half newZ = 0;
+        half newHeight = 0;
+        while (sectionIndex < sectionSteps) {
+            intersection = (prevHeight - prevRayZ) / (prevHeight - currHeight + currRayZ - prevRayZ);
+            finalTexOffset = prevTexOffset +intersection * deltaTex;
+            newZ = prevRayZ - intersection * layerHeight;
+            newHeight = config.sample_height(main_uv + finalTexOffset);
+            if (newHeight > newZ) {
+                currTexOffset = finalTexOffset;
+                currHeight = newHeight;
+                currRayZ = newZ;
+                deltaTex = intersection * deltaTex;
+                layerHeight = intersection * layerHeight;
+            } else {
+                prevTexOffset = finalTexOffset;
+                prevHeight = newHeight;
+                prevRayZ = newZ;
+                deltaTex = (1 - intersection) * deltaTex;
+                layerHeight = (1 - intersection) * layerHeight;
+            }
+            sectionIndex++;
+        }
+        return main_uv + finalTexOffset;
+    }
+
+    void ParallaxEngravingFragment(MeshData d, inout SurfaceData o) {
+        UvConfig config = uv_config(d.uv0);
+        
+        half2 main_uv = d.uv0 * _MainTex_ST.xy + _MainTex_ST.zw;
+        main_uv = ParallaxOffsetUVs(
+            config,
+            main_uv,
+            d.worldNormal, d.worldSpaceViewDir, d.tangentSpaceViewDir,
+            _HeightStepsMin, _HeightStepsMax, _HeightScale, _HeightRefPlane
+        );
+
+        half3 engraving = config.sample_engraving_mask_with_derivatives(main_uv);
+        half is_engraving = engraving.x;
+        half3 engraving_normal = normalize(half3(-_EngravingScale * engraving.yz, 1)); // FIXME better control normals ? less sharp ? use SDF ?
+
+        // FIXME use grad with original ddx/ddy uvs
+        half4 albedo = config.sample_main(_MainTex, sampler_MainTex, main_uv);
+        o.Albedo = lerp(albedo.rgb, _EngravingAlbedo, is_engraving);
+        o.Alpha = 1;
+        half4 height_ao_smooth_none = config.sample_main(_MaskMap, sampler_MaskMap, main_uv);
+        o.Metallic = lerp(0., _EngravingMetallicity, is_engraving);
+        o.Smoothness = lerp(height_ao_smooth_none.b, _EngravingSmoothness, is_engraving);
+        o.Occlusion = lerp(height_ao_smooth_none.g, _EngravingOcclusion, is_engraving);
+        half4 normal_tex = config.sample_main(_BumpMap, sampler_BumpMap, main_uv);
+        o.Normal = lerp(UnpackScaleNormal(normal_tex, 1), engraving_normal, is_engraving);
+    }
+}

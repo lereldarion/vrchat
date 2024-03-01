@@ -34,17 +34,17 @@ namespace Lereldarion.PortalTech {
         [SerializeField] TextMeshProUGUI persistence_message;
 
         [Header("Dynamic Portal Hooks")]
-        private bool config_reskin = false;
         [SerializeField] GameObject reskin_template;
-        private bool config_relocate = false;
         [SerializeField] Transform relocation_target;
+        [SerializeField] GameObject collider_ghost_template;
+        private bool config_reskin = false;
+        private bool config_relocate = false;
         private bool config_debug = false;
         private bool config_collider_ghost = false;
-        [SerializeField] GameObject collider_ghost_template;
 
         void Start() {            
             // Wait for portal marker to setup the portal mesh reference.
-            SendCustomEventDelayedSeconds("RunPersistenceMessageHook", 1f);
+            SendCustomEventDelayedSeconds(nameof(RunPersistenceMessageHook), 1f);
         }
 
         // Access control for dump display. PlayerJoined runs for self too.
@@ -106,24 +106,11 @@ namespace Lereldarion.PortalTech {
             Texture world_texture = Utils.GetWorldTextureFromProtectedPortalCore(portal_core.gameObject);
             debug_quad_material.mainTexture = world_texture;
             debug_display.text += $"\n{world_texture.name}\n{world_texture.width}x{world_texture.height}\n";
-        }
 
-        static private void GetNameTag(Collider portal) {
-            // Cannot access roomId directly. Probably stored as a property in unaccessible components.
-            // I can get room name and player source by parsing the nametag.
-            string world_name = null;
-            string player_name = null;
-            var nametag = portal.transform.Find("Canvas/NameTag");
-            if(nametag != null) {
-                var nametag_tmp = nametag.GetComponent<TextMeshProUGUI>();
-                if(nametag_tmp != null) {
-                    string nametag_text = nametag_tmp.text;
-                    string[] lines = nametag_text.Split('\n');
-                    world_name = lines[0];
-                    player_name = lines[1]; // can be used to access VRCPlayerAPI by matching the displayName.
-                    //debug_display.text = $"World : '{world_name}'\nUser : '{player_name}'\n";
-                }
-            }
+            // Convert text to texture
+            Transform nametag = portal_container.Find("PortalInternal(Clone)/Canvas/NameTag");
+            //text_render_text.text = nametag.GetComponent<TextMeshProUGUI>().text.Split('\n')[0];
+            //text_render_camera.Render();
         }
 
         // Session local storage using the Mesh of the portal.
@@ -170,7 +157,7 @@ namespace Lereldarion.PortalTech {
             MeshRenderer renderer = unprotected_portal.GetComponent<MeshRenderer>();
             Material material = renderer.sharedMaterial;
             Texture texture = material.GetTexture("_WorldTex");
-            GameObject.DestroyImmediate(unprotected_portal); // Cleanup temporary clone
+            GameObject.Destroy(unprotected_portal); // Cleanup temporary clone
             return texture;
         }
 

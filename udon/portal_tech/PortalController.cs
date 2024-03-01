@@ -9,7 +9,8 @@ using System;
 namespace Lereldarion.PortalTech {
     // Component placed on individual reskinned portals to :
     // - detect async loading of textures and use then on replacement skin
-    // - TODO follow timer and display it
+    // - follow timer and display it
+    // - render world info text as texture and use it for engraving effect
     // 
     // Use : make each portal independent and parallel.
     // Expects to be installed on the portal reskin object (child of the portal root), and enabled to start operations
@@ -27,6 +28,10 @@ namespace Lereldarion.PortalTech {
 
         private TextMeshProUGUI timer_field;
         private float current_timer_end;
+
+        private TextMeshProUGUI world_info;
+        [SerializeField] TextRenderingSetup text_rendering_setup;
+        private RenderTexture text_render = null;
 
         // "Constructor". We cannot create components, but we can instantiate a disabled object with components.
         static public void Reskin(Transform portal_root, GameObject template, bool debug) {
@@ -76,12 +81,21 @@ namespace Lereldarion.PortalTech {
             portal_core = transform.parent.Find("PortalGraphics/PortalCore").gameObject;
             remaining_world_texture_poll_attempts = 30;
             world_texture_poll_delay = 0.1f;
-            SendCustomEventDelayedSeconds("CheckUntilWorldTextureIsLoaded", world_texture_poll_delay);
+            SendCustomEventDelayedSeconds(nameof(CheckUntilWorldTextureIsLoaded), world_texture_poll_delay);
+
+            // Name tag used to retrieve world info text
+            world_info = transform.parent.Find("Canvas/NameTag").GetComponent<TextMeshProUGUI>();
 
             // Setup Timer Polling
             timer_field = transform.parent.Find("Canvas/Timer").GetComponent<TextMeshProUGUI>();
             current_timer_end = 0;
             UpdateTimerEndFromField();
+        }
+
+        void OnDestroy() {
+            if(text_render != null) {
+                text_render.Release();
+            }
         }
 
         public void CheckUntilWorldTextureIsLoaded() {
@@ -91,7 +105,7 @@ namespace Lereldarion.PortalTech {
             if (is_placeholder && remaining_world_texture_poll_attempts > 0) {
                 remaining_world_texture_poll_attempts -= 1;
                 world_texture_poll_delay *= 1.5f; // Exponential backoff
-                SendCustomEventDelayedSeconds("CheckUntilWorldTextureIsLoaded", world_texture_poll_delay);
+                SendCustomEventDelayedSeconds(nameof(CheckUntilWorldTextureIsLoaded), world_texture_poll_delay);
                 return;
             }
 
@@ -99,9 +113,15 @@ namespace Lereldarion.PortalTech {
 
             GameObject.Destroy(portal_core); // Not needed anymore
 
+            // Assume world info text has loaded too
+            var world_info_text = world_info.text;
+            var world_name = world_info_text.Split('\n')[0]; // First line is world name
+            text_render = text_rendering_setup.convert_to_texture(world_name);
+
             var mpb = new MaterialPropertyBlock();
             portal_renderer.GetPropertyBlock(mpb);
-            mpb.SetTexture("_WorldTex", world_texture);
+            mpb.SetTexture("_WorldTex", world_texture); // portal surface
+            mpb.SetTexture("_EngravingMask", text_render); // portal frame
             portal_renderer.SetPropertyBlock(mpb);
 
             if(debug) {
@@ -128,7 +148,7 @@ namespace Lereldarion.PortalTech {
                     portal_renderer.SetPropertyBlock(mpb);
                 }
             }
-            SendCustomEventDelayedSeconds("UpdateTimerEndFromField", 1f);
+            SendCustomEventDelayedSeconds(nameof(UpdateTimerEndFromField), 1f);
         }
     }
 }
