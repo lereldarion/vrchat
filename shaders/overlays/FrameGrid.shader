@@ -14,6 +14,7 @@ Shader "Lereldarion/Overlay/FrameGrid" {
         
         Cull Off
         Blend One One
+        ZWrite Off
 
         Pass {
             CGPROGRAM
