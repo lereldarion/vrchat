@@ -122,6 +122,7 @@ Shader "Lereldarion/Overlay/ReflectorSight" {
             SamplerState sampler_Glyph_Texture_SDF;
             // Metadata copied by hand for now.
             struct GlyphDefinition {
+                // https://learnopengl.com/In-Practice/Text-Rendering
                 // all sizes in px with respect to the texture
                 float2 offset;
                 float2 size;
@@ -145,6 +146,7 @@ Shader "Lereldarion/Overlay/ReflectorSight" {
                 { float2(197, 157), float2(22,  8), float2(4.00, 27.42), 30.0 }, // -
                 { float2(194, 184), float2( 9, 10), float2(8.22,  9.63), 25.0 }, // .
             };
+            static const float glyph_texture_resolution = 256; // resolution at which definition values have been computed
 
             // A glyph renderer checks if each added character bounds contain the current pixel, and updates glyph texture uv when it does.
             // At the end we can sample only once the texture to get the SDF value.
@@ -154,31 +156,34 @@ Shader "Lereldarion/Overlay/ReflectorSight" {
             struct GlyphRenderer {
                 // Accumulator : which pixels to sample in the glyph table for the current pixel
                 float2 glyph_tex_uv;
+                float2 glyph_texture_coord;
 
-                // FIXME proper char sequence rendering using all metadata. return next origin with advance.
-                void add(uint glyph_id, float2 uv, float2 pos, float scale) {
+                float2 add_right(uint glyph_id, float2 pixel_uv, float2 origin_uv, float scale) {
                     GlyphDefinition glyph = glyph_definition_table[glyph_id];
-                    float2 texture_offset = glyph.offset / 256.;
-                    float2 texture_size = glyph.size / 256.;
-                    
-                    uv = (uv - pos) / scale;
-                    bool within_glyph = all(0 < uv && uv < texture_size);
-                    if(within_glyph) {
-                        glyph_tex_uv = uv + texture_offset;
+
+                    float2 glyph_drawing_space = (pixel_uv - origin_uv) / scale;
+                    float2 glyph_box_coord = glyph_drawing_space - (glyph.horizontal_bearing - float2(0, glyph.size.y));
+                    bool within_glyph_box = all(0 <= glyph_box_coord && glyph_box_coord <= glyph.size);
+                    if(within_glyph_box) {
+                        glyph_texture_coord = glyph_box_coord + glyph.offset;
                     }
+                    
+                    return origin_uv + float2(glyph.advance * scale, 0);
                 }
 
                 float sdf(float thickness) {
-                    // Force mipmap 0, as we have artefacts with auto mipmap (derivatives are propably noisy).
-                    // Texture is small anyway.
-                    float tex_sdf = _Glyph_Texture_SDF.SampleLevel(sampler_Glyph_Texture_SDF, glyph_tex_uv, 0);
+                    float2 glyph_texture_uv = glyph_texture_coord / glyph_texture_resolution;
+                    // Force mipmap 0, as we have artefacts with auto mipmap (derivatives are propably noisy). Texture is small anyway.
+                    float tex_sdf = _Glyph_Texture_SDF.SampleLevel(sampler_Glyph_Texture_SDF, glyph_texture_uv, 0);
                     // 1 interior, 0 exterior
                     return (1 - tex_sdf) - thickness;
                 }
             };
             GlyphRenderer create_glyph_renderer() {
                 GlyphRenderer r;
-                r.glyph_tex_uv = float2(0, 0); // Usually the corners are outside glyphs
+                // Usually the corners are outside glyphs
+                r.glyph_tex_uv = float2(0, 0);
+                r.glyph_texture_coord = float2(0, 0);
                 return r;
             }
 
@@ -186,14 +191,13 @@ Shader "Lereldarion/Overlay/ReflectorSight" {
             // UI
 
             float range_counter_sdf(float2 uv, uint4 range_digits) {
-                const float scale = 0.1;
-                const float2 pos = float2(0.005, -0.07);
-                const float2 increment = float2(0.175, 0) * scale;
+                const float scale = 0.0004;
+                float2 origin = float2(0, -0.07);
                 GlyphRenderer renderer = create_glyph_renderer();
-                renderer.add(range_digits[3], uv, pos, scale);
-                renderer.add(range_digits[2], uv, pos + increment, scale);
-                renderer.add(range_digits[1], uv, pos + 2 * increment, scale);
-                renderer.add(range_digits[0], uv, pos + 3 * increment, scale);
+                origin = renderer.add_right(range_digits[3], uv, origin, scale);
+                origin = renderer.add_right(range_digits[2], uv, origin, scale);
+                origin = renderer.add_right(range_digits[1], uv, origin, scale);
+                origin = renderer.add_right(range_digits[0], uv, origin, scale);
                 return renderer.sdf(0.15);
             }
 
@@ -219,6 +223,8 @@ Shader "Lereldarion/Overlay/ReflectorSight" {
             fixed4 frag (v2f i) : SV_Target {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
 
+                // i.{aligned/rotating}_uv_{x/y}_os are vectors in a plane facing the view.
+                // We want a measure of angle to view dir ~ sin angle to view dir = cos angle to these plane vectors.
                 float3 view_ray = normalize(i.eye_to_geometry_os);
                 float2 rotating_uv = float2(dot(view_ray, i.rotating_uv_x_os), dot(view_ray, i.rotating_uv_y_os));
                 float2 aligned_uv = float2(dot(view_ray, i.aligned_uv_x_os), dot(view_ray, i.aligned_uv_y_os));
