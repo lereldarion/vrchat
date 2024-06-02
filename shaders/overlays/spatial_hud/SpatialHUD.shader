@@ -1,5 +1,6 @@
 // Overlay at optical infinity (reflecting sight), with crosshair, rangefinder distance, and worldspace compass.
-// Attached to a flat surface with uniform UVs (like a quad). Can be adapted to use different referentials.
+// Attached to a flat surface with uniform UVs (like a quad), it will orient itself with the tangent space.
+// Can be adapted to use object space if necessary.
 Shader "Lereldarion/Overlay/SpatialHUD" {
     Properties {
         [HDR] _Color("Sight emissive color", Color) = (0, 1, 0, 1)
@@ -65,6 +66,7 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
             v2f vert (appdata i) {
                 UNITY_SETUP_INSTANCE_ID(i);
                 v2f o;
+
                 o.position_cs = UnityObjectToClipPos(i.position_os);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
                 
@@ -309,7 +311,7 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
             float elevation_display_sdf(float2 uv, float elevation_at_0, inout GlyphRenderer renderer) {
                 const float tick_start_x = 0.2;
                 const float tick_length = 0.01;
-                const float legend_start_x = tick_start_x + tick_length * 2.2;
+                const float legend_start_x = tick_start_x + tick_length * 2.3;
                 const float glyph_scale = 0.0003;
                 
                 // UVs are sin angle from normal ~ angle for center, in radiants
@@ -398,8 +400,6 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
                 sdf = min(sdf, 1000 * elevation_display_sdf(aligned_uv, i.elevation_radiants, renderer));
                 sdf = min(sdf, 1000 * azimuth_display_sdf(aligned_uv, i.azimuth_radiants, renderer));
                 sdf = min(sdf, 3 * renderer.sdf(0.15)); // Scale for sharpness
-
-                //sdf = min(sdf, 1000 * distance(aligned_uv, float2(i.azimuth_radiants / pi * 0.07, -0.1)));
 
                 // We have few pixels, so make a smooth border FIXME improve consistency
                 const float positive_distance = max(0, sdf);
