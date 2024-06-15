@@ -362,9 +362,9 @@ SubShader {
 
             // Arm (show_upper_bound, animation_lower_bound, time, _)
             float3 arm_config = float3(10, 10, 0);
-            if (limb_id == 2) { arm_config = _Replicator_Dislocation_LeftArm.xyz; }
-            if (limb_id == 3) { arm_config = _Replicator_Dislocation_RightArm.xyz; }
-            if (limb_id == 4) { arm_config = _Replicator_Dislocation_LeftLeg.xyz; }
+            if (limb_id == 1) { arm_config = _Replicator_Dislocation_LeftArm.xyz; }
+            if (limb_id == 2) { arm_config = _Replicator_Dislocation_RightArm.xyz; }
+            if (limb_id == 3) { arm_config = _Replicator_Dislocation_LeftLeg.xyz; }
             config.show = config.show && limb_coordinate <= arm_config.x;
             float arm_time = limb_coordinate >= arm_config.y ? arm_config.z : 0;
             config.time = max(config.time, arm_time);
