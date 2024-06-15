@@ -14,7 +14,7 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
         }
         
         Cull Off
-        Blend One One
+        Blend OneMinusDstColor OneMinusSrcAlpha // Overlay transparency + Blacken when overlayed on white stuff
         ZWrite Off
 
         Pass {
