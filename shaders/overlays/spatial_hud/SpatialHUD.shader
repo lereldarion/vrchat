@@ -72,6 +72,10 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
                 
                 o.eye_to_geometry_os = -ObjSpaceViewDir(i.position_os);
 
+                // Undo skinning skewing, when integrated in a skinned mesh
+                i.normal_os.xyz = normalize(i.normal_os.xyz);
+                i.tangent_os.xyz = normalize(i.tangent_os.xyz);
+
                 // Always use a forward looking orientation
                 if(dot(i.normal_os, o.eye_to_geometry_os) < 0) {
                     i.normal_os = -i.normal_os;
