@@ -1,13 +1,12 @@
-// An overlay which displays edges of triangles, from data sampled in the depth texture. Requires dynamic lighting to work (for the depth texture).
+// An overlay which displays normals of triangles in view space, from data sampled in the depth texture. Requires dynamic lighting to work (for the depth texture).
 //
 // Adapted from https://github.com/netri/Neitri-Unity-Shaders (by Neitri, free of charge, free to redistribute)
 // Added SPS-I support
-// Merged some modifications by Scruffy which removes GrabPass
-// Simplified computation to be done in view-space
+// Removed inverse matrix and moved to view space for ease of computation
 // Added Fullscreen mode
-// https://gist.github.com/bgolus/a07ed65602c009d5e2f753826e8078a0 : we are not in VS but something close, and sufficient for normal differences used in wireframe. Missing invP.
+// https://gist.github.com/bgolus/a07ed65602c009d5e2f753826e8078a0 : we are not in VS but something close, and sufficient for normal-like values. Missing invP.
 
-Shader "Lereldarion/Overlay/Wireframe" {
+Shader "Lereldarion/Overlay/Normals" {
     Properties {
         [ToggleUI] _Overlay_Fullscreen("Force Screenspace Fullscreen", Float) = 0
     }
@@ -100,10 +99,10 @@ Shader "Lereldarion/Overlay/Wireframe" {
             fixed4 fragment_stage (FragmentInput i) : SV_Target {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
 
-                // Idea : estimate normals in any non-projected reference frame, and look for discontinuities (= edges) around the selected pixel.
+                // Idea : estimate normals in any non-projected reference frame.
                 // View-space is chosen because Unity provides unity_CameraInvProjection to reconstruct view-space from screenspace uvs.
                 // Normals are inferred by cross on view-space coordinates of the current pixels and its neighbors.
-
+                
                 // Pixel-neighbor offsets.
                 float pixel_offset = 1.01; // Artefacts appear if we use 1.0
                 float2 screenspace_uv_offset = pixel_offset / _ScreenParams.xy;
@@ -111,22 +110,11 @@ Shader "Lereldarion/Overlay/Wireframe" {
                 // Sample scene position (view space) for pixels around the current one
                 float3 scene_pos_0_0 = scene_view_position_at(i.raw_position_cs, float2(0, 0));
                 float3 scene_pos_m_0 = scene_view_position_at(i.raw_position_cs, float2(-screenspace_uv_offset.x, 0));
-                float3 scene_pos_p_0 = scene_view_position_at(i.raw_position_cs, float2(screenspace_uv_offset.x, 0));
-                float3 scene_pos_0_m = scene_view_position_at(i.raw_position_cs, float2(0, -screenspace_uv_offset.y));
                 float3 scene_pos_0_p = scene_view_position_at(i.raw_position_cs, float2(0, screenspace_uv_offset.y));
 
                 // Compute scene normals at 0 from vectors in different directions / quadrants
-                // unused float3 scene_normal_m_m = normalize(cross(scene_pos_m_0 - scene_pos_0_0, scene_pos_0_m - scene_pos_0_0));
                 float3 scene_normal_m_p = normalize(cross(scene_pos_0_p - scene_pos_0_0, scene_pos_m_0 - scene_pos_0_0));
-                float3 scene_normal_p_m = normalize(cross(scene_pos_0_m - scene_pos_0_0, scene_pos_p_0 - scene_pos_0_0));
-                float3 scene_normal_p_p = normalize(cross(scene_pos_p_0 - scene_pos_0_0, scene_pos_0_p - scene_pos_0_0));
-
-                // Highlight differences in normals
-                float3 o = 1;
-                float sum_normal_differences = dot(o, abs(scene_normal_p_p - scene_normal_m_p)) + dot(o, abs(scene_normal_p_m - scene_normal_m_p));
-                float c = saturate(sum_normal_differences);
-                //c = c * c; // Eliminate noise but kills low diff edges
-                return float4(c.xxx, 1);
+                return float4(GammaToLinearSpace(scene_normal_m_p * 0.5 + 0.5), 1);
             }
 
             ENDCG
