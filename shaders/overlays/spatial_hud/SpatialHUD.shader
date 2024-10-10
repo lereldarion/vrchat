@@ -5,45 +5,49 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
     Properties {
         [HDR] _Color("Sight emissive color", Color) = (0, 1, 0, 1)
         _Glyph_Texture_SDF ("Texture with SDF glyphs", 2D) = "white"
+        [ToggleUI] _Mirror_TBN_X("Mirror TBN X for some meshes", Float) = 0
+        [ToggleUI] _Overlay_Fullscreen("Force Screenspace Fullscreen", Float) = 0
     }
     SubShader {
         Tags {
             "Queue" = "Overlay"
             "RenderType" = "Overlay"
             "VRCFallback" = "Hidden"
+            "PreviewType" = "Plane"
         }
         
         Cull Off
         Blend OneMinusDstColor OneMinusSrcAlpha // Overlay transparency + Blacken when overlayed on white stuff
         ZWrite Off
+        ZTest Less
 
         Pass {
             CGPROGRAM
-            #pragma vertex vert
-            #pragma fragment frag
+            #pragma vertex vertex_stage
+            #pragma geometry geometry_stage
+            #pragma fragment fragment_stage
             #pragma multi_compile_instancing
             
             #include "UnityCG.cginc"
             #pragma target 5.0
 
-            struct appdata {
+            struct VertexInput {
                 float4 position_os : POSITION;
                 float3 normal_os : NORMAL;
                 float4 tangent_os : TANGENT;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
-            struct v2f {
-                float4 position_cs : SV_POSITION;
-                
-                float3 eye_to_geometry_os : EYE_TO_GEOMETRY_OS;
+            struct FragmentInput {
+                float4 position : SV_POSITION;
+                float3 camera_to_geometry_ws : CAMERA_TO_GEOMETRY_WS;
 
                 // Unit vectors rotating with the overlay surface
-                nointerpolation float3 rotating_uv_x_os : ROTATING_UV_X;
-                nointerpolation float3 rotating_uv_y_os : ROTATING_UV_Y;
+                nointerpolation float3 rotating_uv_x_ws : ROTATING_UV_X;
+                nointerpolation float3 rotating_uv_y_ws : ROTATING_UV_Y;
 
                 // Unit vectors that stay aligned to the vertical direction
-                nointerpolation float3 aligned_uv_x_os : ALIGNED_UV_X;
-                nointerpolation float3 aligned_uv_y_os : ALIGNED_UV_Y;
+                nointerpolation float3 aligned_uv_x_ws : ALIGNED_UV_X;
+                nointerpolation float3 aligned_uv_y_ws : ALIGNED_UV_Y;
 
                 nointerpolation uint4 range_digits : RANGE_DIGITS;
 
@@ -62,42 +66,44 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
             UNITY_DECLARE_DEPTH_TEXTURE(_CameraDepthTexture);
 
             static const float pi = 3.14159265359;
+            uniform float _Mirror_TBN_X;
 
-            v2f vert (appdata i) {
+            void vertex_stage (VertexInput i, out FragmentInput o) {
                 UNITY_SETUP_INSTANCE_ID(i);
-                v2f o;
 
-                o.position_cs = UnityObjectToClipPos(i.position_os);
+                o.position = UnityObjectToClipPos(i.position_os);
+                o.camera_to_geometry_ws = mul(unity_ObjectToWorld, i.position_os).xyz - _WorldSpaceCameraPos;
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
                 
-                o.eye_to_geometry_os = -ObjSpaceViewDir(i.position_os);
+                // Uniform data
 
-                // Undo skinning skewing, when integrated in a skinned mesh
-                i.normal_os.xyz = normalize(i.normal_os.xyz);
-                i.tangent_os.xyz = normalize(i.tangent_os.xyz);
+                // WS TBN. Also undoes skinning skewing, when integrated in a skinned mesh.
+                float3 normal_ws = UnityObjectToWorldNormal(i.normal_os);
+                float3 tangent_ws = UnityObjectToWorldNormal(i.tangent_os.xyz);
 
-                // Always use a forward looking orientation
-                if(dot(i.normal_os, o.eye_to_geometry_os) < 0) {
-                    i.normal_os = -i.normal_os;
-                    i.tangent_os.xyz = -i.tangent_os.xyz;
+                // Flip TBN to have forward orientation. This make the HUD 2 sided with mirror.
+                if(dot(normal_ws, o.camera_to_geometry_ws) < 0) {
+                    normal_ws = -normal_ws;
+                    tangent_ws = -tangent_ws;
                 }
 
                 // Use tangent space to follow quad rotations
-                o.rotating_uv_x_os = i.tangent_os.xyz * -1 /* needed to mirror text correctly */;
-                o.rotating_uv_y_os = normalize(cross(i.tangent_os, i.normal_os) * i.tangent_os.w * -1);
+                float mirror_factor = _Mirror_TBN_X ? 1 : -1;
+                o.rotating_uv_x_ws = tangent_ws * mirror_factor;
+                o.rotating_uv_y_ws = normalize(cross(normal_ws, tangent_ws) * i.tangent_os.w);
 
                 // Similar skybox coordinate system but y stays aligned to worldspace vertical.
-                const float3 up_direction_os = UnityWorldToObjectDir(float3(0, 1, 0));
-                const float3 horizontal_tangent = normalize(cross(i.normal_os, up_direction_os));
-                o.aligned_uv_x_os = horizontal_tangent * -1 /* again needed to mirror text correctly */;
-                o.aligned_uv_y_os = cross(horizontal_tangent, i.normal_os);
+                const float3 up_direction_ws = float3(0, 1, 0);
+                const float3 horizontal_tangent = normalize(cross(normal_ws, up_direction_ws));
+                o.aligned_uv_x_ws = horizontal_tangent * -1 /* again needed to mirror text correctly */;
+                o.aligned_uv_y_ws = cross(horizontal_tangent, normal_ws);
                 
                 // World azimuth and elevation of the surface forward normal
-                const float3 east_os = UnityWorldToObjectDir(float3(1, 0, 0));
-                const float3 north_os = UnityWorldToObjectDir(float3(0, 0, 1));
-                const float angular_dist_to_north_0_pi = acos(dot(horizontal_tangent, east_os));
-                o.azimuth_radiants = pi - angular_dist_to_north_0_pi * sign(dot(horizontal_tangent, north_os)); // 0 at north, pi/2 east, pi south, 3pi/2 west
-                const float angular_dist_to_up_0_pi = acos(dot(i.normal_os, up_direction_os));
+                const float3 east_ws = float3(1, 0, 0);
+                const float3 north_ws = float3(0, 0, 1);
+                const float angular_dist_to_north_0_pi = acos(dot(horizontal_tangent, east_ws));
+                o.azimuth_radiants = pi - angular_dist_to_north_0_pi * sign(dot(horizontal_tangent, north_ws)); // 0 at north, pi/2 east, pi south, 3pi/2 west
+                const float angular_dist_to_up_0_pi = acos(dot(normal_ws, up_direction_ws));
                 o.elevation_radiants = pi/2 - angular_dist_to_up_0_pi; // -pi/2 when looking at the bottom, pi/2 at the top
 
                 // Compute depth from the depth texture.
@@ -110,8 +116,7 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
                 const float3 camera_pos_ws = _WorldSpaceCameraPos;
                 const float4x4 matrix_vp = UNITY_MATRIX_VP;
                 #endif
-                const float3 sight_normal_ws = UnityObjectToWorldDir(i.normal_os);
-                const float3 sample_point_ws = camera_pos_ws + sight_normal_ws;
+                const float3 sample_point_ws = camera_pos_ws + normal_ws;
                 const float4 sample_point_cs = mul(matrix_vp, float4(sample_point_ws, 1)); // UnityWorldToClipPos()
                 float4 screen_pos = ComputeNonStereoScreenPos(sample_point_cs);
                 #if UNITY_SINGLE_PASS_STEREO
@@ -119,7 +124,7 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
                 screen_pos.xy = screen_pos.xy * unity_StereoScaleOffset[0].xy + unity_StereoScaleOffset[0].zw * screen_pos.w;
                 #endif
                 const float depth_texture_value = SAMPLE_DEPTH_TEXTURE_LOD(_CameraDepthTexture, float4(screen_pos.xy / screen_pos.w, 0, 4 /* mipmap level */));
-                const float range_ws = length(sight_normal_ws) * LinearEyeDepth(depth_texture_value) / sample_point_cs.w;
+                const float range_ws = LinearEyeDepth(depth_texture_value) / sample_point_cs.w;
 
                 // Pre compute digits to print for range and world position
                 const float4 printed_values = float4(
@@ -135,8 +140,44 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
                 o.world_x_digits = uint4(digit_1000[1], digit_100[1], digit_10[1], digit_1[1]);
                 o.world_y_digits = uint4(digit_1000[2], digit_100[2], digit_10[2], digit_1[2]);
                 o.world_z_digits = uint4(digit_1000[3], digit_100[3], digit_10[3], digit_1[3]); 
+            }
 
-                return o;
+            ////////////////////////////////////////////////////////////////////////////////////
+
+            uniform float _Overlay_Fullscreen;
+            uniform float _VRChatMirrorMode;
+            uniform float _VRChatCameraMode;
+
+            [maxvertexcount(4)]
+            void geometry_stage(triangle FragmentInput input[3], uint triangle_id : SV_PrimitiveID, inout TriangleStream<FragmentInput> stream) {
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input[0]);
+                if(_Overlay_Fullscreen == 1 && _VRChatMirrorMode == 0 && _VRChatCameraMode == 0) {
+                    // Fullscreen mode : generate a fullscreen quad for triangle 0 and discard others
+                    if (triangle_id == 0) {
+                        FragmentInput output = input[0];
+
+                        // Generate in VS close to near clip plane. Having non CS positions is essential to return to WS later.
+                        float2 quad[4] = { float2(-1, -1), float2(-1, 1), float2(1, -1), float2(1, 1) };
+                        float near_plane_z = -_ProjectionParams.y;
+                        float2 tan_half_fov = 1 / unity_CameraProjection._m00_m11; // https://jsantell.com/3d-projection/
+                        // Add margins, mostly in case of oblique P matrices or similar
+                        float quad_z = near_plane_z * 2; // z margin
+                        float quad_xy = quad_z * tan_half_fov * 1.2; // xy margin
+
+                        UNITY_UNROLL
+                        for(uint i = 0; i < 4; i += 1) {
+                            float4 position_vs = float4(quad[i] * quad_xy, quad_z, 1);
+                            output.position = UnityViewToClipPos(position_vs);
+                            output.camera_to_geometry_ws = mul((float3x3) unity_MatrixInvV, position_vs.xyz);
+                            stream.Append(output);
+                        }
+                    }
+                } else {
+                    // Normal geometry mode : forward triangle
+                    stream.Append(input[0]);
+                    stream.Append(input[1]);
+                    stream.Append(input[2]);
+                }
             }
 
             ////////////////////////////////////////////////////////////////////////////////////
@@ -247,7 +288,7 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
                 }
             }
 
-            void draw_world_position_block(float2 uv, v2f i, inout GlyphRenderer renderer) {
+            void draw_world_position_block(float2 uv, FragmentInput i, inout GlyphRenderer renderer) {
                 #if UNITY_SINGLE_PASS_STEREO // Consistent position. Digits are computed in vertex, but sign is cheap to do there.
                 const float3 camera_pos_ws = unity_StereoWorldSpaceCameraPos[0];
                 #else
@@ -387,14 +428,14 @@ Shader "Lereldarion/Overlay/SpatialHUD" {
 
             uniform fixed4 _Color;
 
-            fixed4 frag (v2f i) : SV_Target {
+            fixed4 fragment_stage (FragmentInput i) : SV_Target {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
 
                 // i.{aligned/rotating}_uv_{x/y}_os are vectors in a plane facing the view.
                 // We want a measure of angle to view dir ~ sin angle to view dir = cos angle to these plane vectors.
-                const float3 view_ray = normalize(i.eye_to_geometry_os);
-                const float2 rotating_uv = float2(dot(view_ray, i.rotating_uv_x_os), dot(view_ray, i.rotating_uv_y_os));
-                const float2 aligned_uv = float2(dot(view_ray, i.aligned_uv_x_os), dot(view_ray, i.aligned_uv_y_os));
+                const float3 ray_ws = normalize(i.camera_to_geometry_ws);
+                const float2 rotating_uv = float2(dot(ray_ws, i.rotating_uv_x_ws), dot(ray_ws, i.rotating_uv_y_ws));
+                const float2 aligned_uv = float2(dot(ray_ws, i.aligned_uv_x_ws), dot(ray_ws, i.aligned_uv_y_ws));
 
                 float sdf = 1000 * sight_pattern_sdf(rotating_uv); // Need high scale due to uv units
 
