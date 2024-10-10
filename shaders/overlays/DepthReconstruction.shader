@@ -1,10 +1,14 @@
-// An overlay which displays edges of triangles, from data sampled in the depth texture. Requires dynamic lighting to work (for the depth texture).
+// Experiments with depth reconstruction.
 //
-// Initial idea from https://github.com/netri/Neitri-Unity-Shaders (by Neitri, free of charge, free to redistribute)
-// Improved with SPS-I support, Fullscreen "screenspace" mode.
-// Rewritten way of recreating VS positions using interpolated VS ray : precise, removes inverse, avoids unavailable unity_MatrixInvP.
+// Initially adapted from https://github.com/netri/Neitri-Unity-Shaders (by Neitri, free of charge, free to redistribute)
+// Added SPS-I support
+// Removed inverse matrix and moved to view space for ease of computation. Sadly uses the invalid CameraInvProjection.
+// Added Fullscreen mode
+// Tried bgolus strategy but SPS-I artefacts :( https://gist.github.com/bgolus/a07ed65602c009d5e2f753826e8078a0
+// Lots of documentation and tests, and then use the camera_ray + depth strategy but allowing depth sample with shift.
+// Using VS for ray interpolation : less math, and should reduce floating errors. Already reduces artefacting at close range compared to interpolated WS ray.
 
-Shader "Lereldarion/Overlay/Wireframe" {
+Shader "Lereldarion/Overlay/DepthReconstruction" {
     Properties {
         [ToggleUI] _Overlay_Fullscreen("Force Screenspace Fullscreen", Float) = 0
     }
@@ -19,7 +23,7 @@ Shader "Lereldarion/Overlay/Wireframe" {
         Cull Off
         ZWrite Off
         ZTest Less
-
+        
         Pass {
             CGPROGRAM
             #pragma vertex vertex_stage
@@ -121,12 +125,21 @@ Shader "Lereldarion/Overlay/Wireframe" {
 
                 SceneReconstruction sr = SceneReconstruction::init(input);
                 float3 vs_0_0 = sr.position_vs();
+
+                float3 ws = mul(unity_MatrixInvV, float4(vs_0_0, 1)).xyz;
+                //return fixed4(frac(ws), 1);
+                
                 float3 vs_m_0 = sr.position_vs(float2(-1, 0));
                 float3 vs_0_p = sr.position_vs(float2(0, 1));
+
+                // Normals : cross product between pixel reconstructed VS, then WS
+                float3 normal_dir_vs = cross(vs_0_p - vs_0_0, vs_m_0 - vs_0_0);
+                float3 normal_ws = normalize(mul((float3x3) unity_MatrixInvV, normal_dir_vs));
+                return fixed4(GammaToLinearSpace(normal_ws * 0.5 + 0.5), 1);
+                
                 float3 vs_p_0 = sr.position_vs(float2(1, 0));
                 float3 vs_0_m = sr.position_vs(float2(0, -1));
                 
-                // 3 normals from origin, with 3 quadrants
                 float3 normal_vs_m_p = normalize(cross(vs_0_p - vs_0_0, vs_m_0 - vs_0_0));
                 float3 normal_vs_p_m = normalize(cross(vs_0_m - vs_0_0, vs_p_0 - vs_0_0));
                 float3 normal_vs_p_p = normalize(cross(vs_p_0 - vs_0_0, vs_0_p - vs_0_0));
@@ -138,6 +151,75 @@ Shader "Lereldarion/Overlay/Wireframe" {
                 //c = c * c; // Eliminate noise but kills low diff edges
                 return float4(c.xxx, 1);
             }
+
+            ///////////////////////////////////////////////////////////////////
+            // Other strategies
+
+            // Strategy that rebuilds the worldspace from frustum clip planes.
+            // Fails due to unity_CameraWorldClipPlanes[6] being probably abandonned and buggy :
+            // - almost no google matches, probably no users
+            // - Far plane equation is wrong in the editor. Used parallel near plane with correction factors for tests.
+            // - No Stereo matrix support spotted in headers or decompiled references.
+            // Predictably the value is unusable in VR.
+            struct WorldspaceCameraFrustum {
+                float3 camera_to_far_plane_corner[2][2] : WS_CAMERA_FRUSTUM;
+
+                static WorldspaceCameraFrustum init() {
+                    WorldspaceCameraFrustum wscf;
+                    // Find worldspace position for each corner of the far plane in the camera frustum.
+                    wscf.camera_to_far_plane_corner[0][0] = compute_camera_to_far_plane_corner(2, 0); // bottom left
+                    wscf.camera_to_far_plane_corner[1][0] = compute_camera_to_far_plane_corner(2, 1); // bottom right
+                    wscf.camera_to_far_plane_corner[0][1] = compute_camera_to_far_plane_corner(3, 0); // top left
+                    wscf.camera_to_far_plane_corner[1][1] = compute_camera_to_far_plane_corner(3, 1); // top right
+                    return wscf;
+                }
+                static float3 compute_camera_to_far_plane_corner(int side0, int side1) {
+                    // Use worldspace clip planes from unity.
+                    // Use cross from intersecting side planes to find the corner direction vector, then renormalize between camera and far plane.
+                    // We do not care about the direction of the cross, it will be flipped to correct orientation by the renormalization.
+                    float3 intersection_direction = cross(unity_CameraWorldClipPlanes[side0].xyz, unity_CameraWorldClipPlanes[side1].xyz);
+                    float4 far_plane_eqn = unity_CameraWorldClipPlanes[5];
+                    return (dot(float4(_WorldSpaceCameraPos, 1), far_plane_eqn) / dot(intersection_direction, far_plane_eqn.xyz)) * intersection_direction;
+                }
+
+                float3 worldspace_from_screenspace_uv_depth(float2 uv, float depth_01) {
+                    float3 camera_to_far_plane = lerp(
+                        lerp(camera_to_far_plane_corner[0][0], camera_to_far_plane_corner[0][1], uv.y),
+                        lerp(camera_to_far_plane_corner[1][0], camera_to_far_plane_corner[1][1], uv.y),
+                        uv.x
+                    );
+                    return _WorldSpaceCameraPos + camera_to_far_plane * depth_01;
+                }
+
+                float3 worldspace_scene_position(float2 pixel) {
+                    // HLSLSupport.hlsl : DepthTexture is a TextureArray in SPS-I, so its size should be safe to use to get uvs.
+                    float2 uv = pixel * _CameraDepthTexture_TexelSize.xy;
+                    float raw = SAMPLE_DEPTH_TEXTURE_LOD(_CameraDepthTexture, float4(uv, 0, 0)); // [0,1]
+                    if(!(0 < raw && raw < 1)) { discard; }
+                    uv.y = 1 - uv.y;
+                    return worldspace_from_screenspace_uv_depth(uv, Linear01Depth(raw));
+                }
+            };
+
+            // Strategy to synthetise VS with inverse of P from CS.
+            // https://gist.github.com/bgolus/a07ed65602c009d5e2f753826e8078a0
+            // InvP is not available, so it uses CameraInvProjection which is "generally" close, up to a rotate or something.
+            // This works ok in editor (3D and with mock HMD) but fails in VR ; probably due to oblique projection matrices being individually rotated.
+            // Without a real InvP including the API-specific changes (HMD stuff), this will never work.
+            float3 scene_position_bgolus_vs(float2 pixel) {
+                // HLSLSupport.hlsl : DepthTexture is a TextureArray in SPS-I, so its size should be safe to use to get uvs.
+                float2 uv = pixel * _CameraDepthTexture_TexelSize.xy;
+                float raw = SAMPLE_DEPTH_TEXTURE_LOD(_CameraDepthTexture, float4(uv, 0, 0)); // [0,1]
+                if(!(0 < raw && raw < 1)) { discard; }
+                // Rebuild position in VS from screenspace.
+                // Craft a far plane CS position using OpenGL depth format [near, far]=[-1, 1]
+                float far_plane_depth = _ProjectionParams.z;
+                float4 pixel_at_far_plane_cs = float4(uv * 2.0 - 1.0, 1, 1) * far_plane_depth;
+                // Thus we can use the OpenGL format unity_CameraInvProjection. No choice as unity_MatrixInvP is not available.
+                float3 pixel_at_far_plane_vs = mul(unity_CameraInvProjection, pixel_at_far_plane_cs).xyz;
+                return pixel_at_far_plane_vs * Linear01Depth(raw);
+            }
+
             ENDCG
         }
     }

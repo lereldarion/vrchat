@@ -1,11 +1,12 @@
-// An overlay which displays edges of triangles, from data sampled in the depth texture. Requires dynamic lighting to work (for the depth texture).
+// An overlay which displays a 1m grid overlapped onto world, from data sampled in the depth texture. Requires dynamic lighting to work (for the depth texture).
 //
 // Initial idea from https://github.com/netri/Neitri-Unity-Shaders (by Neitri, free of charge, free to redistribute)
 // Improved with SPS-I support, Fullscreen "screenspace" mode.
 // Rewritten way of recreating VS positions using interpolated VS ray : precise, removes inverse, avoids unavailable unity_MatrixInvP.
 
-Shader "Lereldarion/Overlay/Wireframe" {
+Shader "Lereldarion/Overlay/Grid" {
     Properties {
+        _Grid_Zoom("Grid Zoom", Float) = 1
         [ToggleUI] _Overlay_Fullscreen("Force Screenspace Fullscreen", Float) = 0
     }
     SubShader {
@@ -17,6 +18,7 @@ Shader "Lereldarion/Overlay/Wireframe" {
         }
         
         Cull Off
+        Blend One One // Emission
         ZWrite Off
         ZTest Less
 
@@ -112,31 +114,30 @@ Shader "Lereldarion/Overlay/Wireframe" {
                     float3 shifted_ray_vs = ray_vs + pixel_shift.x * ray_dx_vs + pixel_shift.y * ray_dy_vs;
                     float2 uv = (pixel + pixel_shift) * _CameraDepthTexture_TexelSize.xy;
                     float raw = SAMPLE_DEPTH_TEXTURE_LOD(_CameraDepthTexture, float4(uv, 0, 0)); // [0,1]
+                    if (!(0 < raw && raw < 1)) { discard; }
                     return shifted_ray_vs * LinearEyeDepth(raw);
                 }
             };
+
+            float3 distance_to_01_grid_lines(float3 position) {
+                return abs(frac(0.5 + position) - 0.5);
+            }
+
+            uniform float _Grid_Zoom;
 
             fixed4 fragment_stage (FragmentInput input) : SV_Target {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
                 SceneReconstruction sr = SceneReconstruction::init(input);
                 float3 vs_0_0 = sr.position_vs();
-                float3 vs_m_0 = sr.position_vs(float2(-1, 0));
-                float3 vs_0_p = sr.position_vs(float2(0, 1));
-                float3 vs_p_0 = sr.position_vs(float2(1, 0));
-                float3 vs_0_m = sr.position_vs(float2(0, -1));
-                
-                // 3 normals from origin, with 3 quadrants
-                float3 normal_vs_m_p = normalize(cross(vs_0_p - vs_0_0, vs_m_0 - vs_0_0));
-                float3 normal_vs_p_m = normalize(cross(vs_0_m - vs_0_0, vs_p_0 - vs_0_0));
-                float3 normal_vs_p_p = normalize(cross(vs_p_0 - vs_0_0, vs_0_p - vs_0_0));
-                
-                // Highlight differences in normals. Does not need WS for that.
-                float3 o = 1;
-                float sum_normal_differences = dot(o, abs(normal_vs_p_p - normal_vs_m_p)) + dot(o, abs(normal_vs_p_m - normal_vs_m_p));
-                float c = saturate(sum_normal_differences);
-                //c = c * c; // Eliminate noise but kills low diff edges
-                return float4(c.xxx, 1);
+                float3 ws = mul(unity_MatrixInvV, float4(vs_0_0, 1)).xyz;
+                                
+                // Idea : add tint if position is close to axis xyz at grid_size intervals;
+                float3 grid_distance = distance_to_01_grid_lines(_Grid_Zoom * ws);
+                // non-linearize to spike if distance is 0
+                float3 grid_proximity = saturate(0.5 - grid_distance * grid_distance * 1000);
+                // Already fits Blender colors : x=red, y=green, z=blue
+                return float4(grid_proximity, 1);
             }
             ENDCG
         }
