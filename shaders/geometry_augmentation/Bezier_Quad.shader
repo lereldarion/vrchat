@@ -32,8 +32,10 @@
 // Using these displacements, it is easy to combine both axis of the patch :
 // P(u, v) = I(u, v) + lerp(v, P01(u), P23(u)) + lerp(u, P03(v), P12(v));
 // 
-//
-// TBN can be computed by deriving P(u, v) by u and v. TODO
+// TBN can be computed by deriving P(u, v) by u and v.
+// Comparison to PN : surface is slightly different in normal only mode. Very different in tbn mode but PN would be too.
+// Still not C2 on the edges using derivatives ! At this point the only solution is to interpolate TBN vectors in quadratic fashion.
+// But at that point PN would be enough.
 
 // Useful links :
 // Tessellation introduction https://nedmakesgames.medium.com/mastering-tessellation-shaders-and-their-many-uses-in-unity-9caeb760150e
@@ -209,14 +211,23 @@ Shader "Lereldarion/Bezier_Quad" {
 
             struct InterpolatedVertexData {
                 float3 position;
+                float3 tangent_x;
+                float3 tangent_y;
+                float3 normal;
                 float2 uv0;
 
                 static InterpolatedVertexData interpolate(const OutputPatch<TessellationControlPoint, 4> cp, float2 patch_uv) {
                     float4 muv_uv = float4 (1.0 - patch_uv, patch_uv);
                     float2 umu_vmv = muv_uv.xy * muv_uv.zw;
                     float4 linear_factors = muv_uv.xzzx * muv_uv.yyww;
+                    float2 edge_factors = umu_vmv * (2.0 * patch_uv - 1.0);
 
-                    float2 two_uv_m_1 = 2.0 * patch_uv - 1.0;
+                    float4 dlinear_factors_dx = float4(-1, 1, 1, -1) * muv_uv.yyww;
+                    float4 dlinear_factors_dy = muv_uv.xzzx * float4(-1, -1, 1, 1);
+
+                    float2 dt2mt = (-3.0 * patch_uv + 2.0) * patch_uv; // (du2mu_du, dv2mv_dv)
+                    float2 dmt2t = (3.0 * patch_uv - 4.0) * patch_uv + 1.0; // (dmu2u_du, dmv2v_dv)
+                    float2 dedge_factors = (-6.0 * patch_uv + 6.0) * patch_uv - 1.0;
 
                     InterpolatedVertexData output;
 
@@ -225,10 +236,25 @@ Shader "Lereldarion/Bezier_Quad" {
                     float4x3 cp_d_edge_v = float4x3(cp[0].d_edge_v, cp[1].d_edge_v, cp[2].d_edge_v, cp[3].d_edge_v);
                     float4x3 edges = float4x3(cp_positions[3] - cp_positions[0], cp_positions[1] - cp_positions[0], cp_positions[2] - cp_positions[1], cp_positions[2] - cp_positions[3]);
 
-                    output.position = mul(linear_factors, cp_positions) +
+                    output.position = (
+                        mul(linear_factors, cp_positions) +
                         umu_vmv.x * mul(linear_factors, cp_d_edge_u) +
                         umu_vmv.y * mul(linear_factors, cp_d_edge_v) +
-                        mul(muv_uv * umu_vmv.yxyx * two_uv_m_1.yxyx, edges);
+                        mul(muv_uv * edge_factors.yxyx, edges)
+                    );
+                    output.tangent_x = normalize(
+                        mul(dlinear_factors_dx, cp_positions) +
+                        mul(float4(dmt2t.x, dt2mt.x, dt2mt.x, dmt2t.x) * muv_uv.yyww, cp_d_edge_u) +
+                        umu_vmv.y * mul(dlinear_factors_dx, cp_d_edge_v) +
+                        mul(float4(-edge_factors.y, muv_uv.y * dedge_factors.x, edge_factors.y, muv_uv.w * dedge_factors.x), edges)
+                    );
+                    output.tangent_y = normalize(
+                        mul(dlinear_factors_dy, cp_positions) +
+                        umu_vmv.x * mul(dlinear_factors_dy, cp_d_edge_u) +
+                        mul(muv_uv.xzzx * float4(dmt2t.y, dmt2t.y , dt2mt.y, dt2mt.y), cp_d_edge_v) +
+                        mul(float4(muv_uv.x * dedge_factors.y, -edge_factors.x, muv_uv.z * dedge_factors.y, edge_factors.x), edges)
+                    );
+                    output.normal = normalize(cross(output.tangent_x, output.tangent_y));
 
                     output.uv0 = mul(linear_factors, float4x2(cp[0].vertex.uv0, cp[1].vertex.uv0, cp[2].vertex.uv0, cp[3].vertex.uv0));
 
@@ -244,9 +270,9 @@ Shader "Lereldarion/Bezier_Quad" {
                 InterpolatedVertexData pn = InterpolatedVertexData::interpolate(cp, patch_uv);
 
                 output.position_os = pn.position;
-                output.normal_os = 0;
-                output.tangent_os = 0;
-                output.binormal_os = 0;
+                output.normal_os = pn.normal;
+                output.tangent_os = pn.tangent_x;
+                output.binormal_os = pn.tangent_y;
                 output.uv = pn.uv0;
             }
 
