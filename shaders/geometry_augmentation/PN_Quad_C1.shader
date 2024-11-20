@@ -25,6 +25,10 @@
 //
 // TBN can be computed by deriving P(u, v) by u and v.
 // A downside of both PN variants (original and lerp one) is that TBN is NOT smooth on edges ! Only on vertices.
+//
+// Test of using the original PN quad approximation for normals to build the TBN.
+// In short : C1 on edges, but not a very good approximation, and needs to be fixed for tangent/binormal (improvised as PN does not address them).
+// Also falls into DX11 shader compiler limitations on hull constant stage (IPC error)...
 
 // Useful links :
 // Tessellation introduction https://nedmakesgames.medium.com/mastering-tessellation-shaders-and-their-many-uses-in-unity-9caeb760150e
@@ -33,7 +37,7 @@
 // Archived reference https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#HullShader
 // Good practices from nvidia https://developer.download.nvidia.com/whitepapers/2010/PN-AEN-Triangles-Whitepaper.pdf
 
-Shader "Lereldarion/PN_Quad" {
+Shader "Lereldarion/PN_Quad_C1" {
     Properties {
         [Toggle(TBN)] _Mode_TBN ("Show TBN instead of surface", Float) = 0
         _Tessellation ("Tessellation", Integer) = 1
@@ -80,7 +84,8 @@ Shader "Lereldarion/PN_Quad" {
 
             struct TrueVertexData {
                 float3 position_os : POSITION;
-                float3 normal_os : NORMAL; // May be non-normalized due to skinning
+                float3 normal_os : NORMAL; // Normal / tangent may be non-normalized due to skinning
+                float4 tangent_os : TANGENT;
 
                 float2 uv : TEXCOORD0; // Used to guide ruffles : X = direction along ruffles 01, Y = from flat to thick on a ruffle 01.
                 // TODO secondary uv to configure thickness & loop count
@@ -91,6 +96,8 @@ Shader "Lereldarion/PN_Quad" {
             struct TessellationVertexData {
                 float3 position_os : POSITION_OS;
                 float3 normal_os : NORMAL_OS; // Normalized
+                float3 tangent_os : TANGENT_OS;
+                float3 binormal_os : BINORMAL_OS;
                 float normal_scale : VERTEX_SCALE;
                 float2 uv : TEXCOORD0;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
@@ -100,15 +107,20 @@ Shader "Lereldarion/PN_Quad" {
                 TessellationVertexData vertex;
 
                 // Pn displacement towards edges along patch u and v
-                float3 pn_d_edge_u : PN_DISPLACEMENT_EDGE_U; // dot(P - Pu, n) n
-                float3 pn_d_edge_v : PN_DISPLACEMENT_EDGE_V; // dot(P - Pv, n) n
+                float3 d_edge_u : DISPLACEMENT_EDGE_U; // dot(P - Pu, n) n
+                float3 d_edge_v : DISPLACEMENT_EDGE_V; // dot(P - Pv, n) n
+
+                // stores value for edge to self+1
+                float3 cp_edge_normal : CP_EDGE_NORMAL;
+                float3 cp_edge_tangent : CP_EDGE_TANGENT;
+                float3 cp_edge_binormal : CP_EDGE_BINORMAL;
+
+                float3 partial_cp_center_normal : PARTIAL_CP_CENTER_NORMAL;
+                float3 partial_cp_center_tangent : PARTIAL_CP_CENTER_TANGENT;
+                float3 partial_cp_center_binormal : PARTIAL_CP_CENTER_BINORMAL;
             };
 
             struct TessellationFactors {
-                // Subdivision factors related to patch_uv
-                float edge[4] : SV_TessFactor; // Subdivide along edges [u=0, v=0, u=1, v=1]
-                float inside[2] : SV_InsideTessFactor; // Subdivide interior along axis [u, v] ; 0 = e1/e3, 1 = e0/e2
-
                 // Vertex patch_uv association is chosen as [(0, 0), (1, 0), (1, 1), (0, 1)]
                 // v             e3
                 // ↑  b3  -- b32 -- b23 -- b2
@@ -116,6 +128,8 @@ Shader "Lereldarion/PN_Quad" {
                 // e0 b03 ---------------- b12
                 //    b0  -- b01 -- b10 -- b1
                 //               e1            -> u
+                float edge[4] : SV_TessFactor; // Subdivide along edges [u=0, v=0, u=1, v=1]
+                float inside[2] : SV_InsideTessFactor; // Subdivide interior along axis [u, v] ; 0 = e1/e3, 1 = e0/e2
             };
 
             // Constants
@@ -129,6 +143,8 @@ Shader "Lereldarion/PN_Quad" {
                 output.position_os = input.position_os.xyz;
                 output.normal_scale = length(input.normal_os); // Length useful to adjust ruffle thickness with skinning+scaling
                 output.normal_os = input.normal_os / output.normal_scale; // Might as well with the length
+                output.tangent_os = normalize(input.tangent_os.xyz);
+                output.binormal_os = normalize(cross(output.normal_os, output.tangent_os) * input.tangent_os.w);
                 output.uv = input.uv;
             }
 
@@ -156,6 +172,12 @@ Shader "Lereldarion/PN_Quad" {
                 }
             }
 
+            // Only works if the vector is mostly perpendicular to the edge
+            float3 edge_quadratic_interpolation_center_cp(float3 edge, float3 v0, float3 v1) {
+                float3 sum = v0 + v1; // Analog to average, but do not divide as we normalize anyway.
+                return normalize(sum - 2.0 * dot(edge, sum) / dot(edge, edge) * edge);
+            }
+
             [domain ("quad")]
             [outputcontrolpoints (4)]
             [outputtopology ("triangle_cw")]
@@ -164,19 +186,39 @@ Shader "Lereldarion/PN_Quad" {
             //[maxtessfactor (64.)]
             TessellationControlPoint hull_control_point_stage (const InputPatch<TessellationVertexData, 4> inputs, uint id : SV_OutputControlPointID) {
                 uint rotation = rotation_to_align_patch_with_uv(inputs, id);
-                id = (id + rotation) % 4;
+                uint fetch_id = (id + rotation) % 4;
                 
                 TessellationControlPoint output;
                 
-                const TessellationVertexData input = inputs[id];
+                const TessellationVertexData input = inputs[fetch_id];
                 UNITY_SETUP_INSTANCE_ID (input);
                 output.vertex = input;
                 
                 // Displacement for edge u/v from this patch corner. Use xor to get the other point ids.
                 bool swaps_axis = rotation & 1 == 1;
-                output.pn_d_edge_u = dot(input.position_os - inputs[id ^ (swaps_axis ? 3 : 1)].position_os, input.normal_os) * input.normal_os;
-                output.pn_d_edge_v = dot(input.position_os - inputs[id ^ (swaps_axis ? 1 : 3)].position_os, input.normal_os) * input.normal_os;
-                
+                output.d_edge_u = dot(input.position_os - inputs[fetch_id ^ (swaps_axis ? 3 : 1)].position_os, input.normal_os) * input.normal_os;
+                output.d_edge_v = dot(input.position_os - inputs[fetch_id ^ (swaps_axis ? 1 : 3)].position_os, input.normal_os) * input.normal_os;
+
+                const TessellationVertexData next = inputs[(fetch_id + 1) % 4];
+                float3 edge = next.position_os - input.position_os;
+                // Normal quadratic interpolation, C1 on edges. Not accurate to the curve !
+                output.cp_edge_normal = edge_quadratic_interpolation_center_cp(edge, input.normal_os, next.normal_os);
+                // Tangent and binormal interpolation : use on the vector that is perpendicular to the edge
+                if(id & 1 == 1) {
+                    // Edge along binormal : use strategy on tangent
+                    output.cp_edge_tangent = edge_quadratic_interpolation_center_cp(edge, input.tangent_os, next.tangent_os);
+                    output.cp_edge_binormal = normalize(cross(output.cp_edge_tangent, output.cp_edge_normal));
+                } else {
+                    // Edge along tangent : use strategy on binormal
+                    output.cp_edge_binormal = edge_quadratic_interpolation_center_cp(edge, input.binormal_os, next.binormal_os);
+                    output.cp_edge_tangent = normalize(cross(output.cp_edge_binormal, output.cp_edge_normal));
+                }
+                //output.cp_edge_tangent = edge_quadratic_interpolation_center_cp(edge, input.tangent_os, next.tangent_os);
+                //output.cp_edge_binormal = edge_quadratic_interpolation_center_cp(edge, input.binormal_os, next.binormal_os);
+
+                output.partial_cp_center_normal = output.cp_edge_normal * 2 + input.normal_os;
+                output.partial_cp_center_tangent = output.cp_edge_tangent * 2 + input.tangent_os;
+                output.partial_cp_center_binormal = output.cp_edge_binormal * 2 + input.binormal_os;
                 return output;
             }
 
@@ -187,42 +229,74 @@ Shader "Lereldarion/PN_Quad" {
 
             struct InterpolatedVertexData {
                 float3 position;
-                float3 tangent_u;
-                float3 tangent_v;
+                float3 tangent;
+                float3 binormal;
                 float3 normal;
                 float normal_scale;
                 float2 uv;
 
-                static InterpolatedVertexData interpolate(const OutputPatch<TessellationControlPoint, 4> cp, float2 patch_uv) {
+                static InterpolatedVertexData interpolate(const TessellationFactors factors, const OutputPatch<TessellationControlPoint, 4> cp, float2 patch_uv) {
                     float4 muv_uv = float4 (1.0 - patch_uv, patch_uv);
+                    float2 umu_vmv = muv_uv.xy * muv_uv.zw;
                     float4 linear_factors = muv_uv.xzzx * muv_uv.yyww;
 
                     InterpolatedVertexData output;
 
-                    // PN vertex displacement, using linear interpolate between bezier displacement on edges
-                    float2 umu_vmv = muv_uv.xy * muv_uv.zw;
-                    float4 umu_factors = umu_vmv.x * linear_factors;
-                    float4 vmv_factors = umu_vmv.y * linear_factors;
                     float4x3 cp_positions = float4x3(cp[0].vertex.position_os, cp[1].vertex.position_os, cp[2].vertex.position_os, cp[3].vertex.position_os);
-                    float4x3 cp_d_edge_u = float4x3(cp[0].pn_d_edge_u, cp[1].pn_d_edge_u, cp[2].pn_d_edge_u, cp[3].pn_d_edge_u);
-                    float4x3 cp_d_edge_v = float4x3(cp[0].pn_d_edge_v, cp[1].pn_d_edge_v, cp[2].pn_d_edge_v, cp[3].pn_d_edge_v);
-                    output.position = mul(linear_factors, cp_positions) + mul(umu_factors, cp_d_edge_u) + mul(vmv_factors, cp_d_edge_v);
+                    float4x3 cp_d_edge_u = float4x3(cp[0].d_edge_u, cp[1].d_edge_u, cp[2].d_edge_u, cp[3].d_edge_u);
+                    float4x3 cp_d_edge_v = float4x3(cp[0].d_edge_v, cp[1].d_edge_v, cp[2].d_edge_v, cp[3].d_edge_v);
+                    output.position = (
+                        mul(linear_factors, cp_positions) +
+                        umu_vmv.x * mul(linear_factors, cp_d_edge_u) +
+                        umu_vmv.y * mul(linear_factors, cp_d_edge_v)
+                    );
 
-                    // u/v tangent : derive position by u/v
-                    float2 dt2mt_dt = (-3.0 * patch_uv + 2.0) * patch_uv; // (du2mu_du, dv2mv_dv)
-                    float2 dmt2t_dt = (3.0 * patch_uv - 4.0) * patch_uv + 1.0; // (dmu2u_du, dmv2v_dv)
+                    if (false) {
+                        float4 dlinear_factors_dx = float4(-1, 1, 1, -1) * muv_uv.yyww;
+                        float4 dlinear_factors_dy = muv_uv.xzzx * float4(-1, -1, 1, 1);
+                        float2 dt2mt = (-3.0 * patch_uv + 2.0) * patch_uv; // (du2mu_du, dv2mv_dv)
+                        float2 dmt2t = (3.0 * patch_uv - 4.0) * patch_uv + 1.0; // (dmu2u_du, dmv2v_dv)
+                        output.tangent = normalize(
+                            mul(dlinear_factors_dx, cp_positions) +
+                            mul(float4(dmt2t.x, dt2mt.x, dt2mt.x, dmt2t.x) * muv_uv.yyww, cp_d_edge_u) +
+                            umu_vmv.y * mul(dlinear_factors_dx, cp_d_edge_v)
+                        );
+                        output.binormal = normalize(
+                            mul(dlinear_factors_dy, cp_positions) +
+                            umu_vmv.x * mul(dlinear_factors_dy, cp_d_edge_u) +
+                            mul(muv_uv.xzzx * float4(dmt2t.y, dmt2t.y , dt2mt.y, dt2mt.y), cp_d_edge_v)
+                        );
+                        output.normal = normalize(cross(output.tangent, output.binormal));
 
-                    float4 dlinear_factors_du = float4(-1, 1, 1, -1) * muv_uv.yyww;
-                    float4 dumu_factors_du = float4(dmt2t_dt.x, dt2mt_dt.x, dt2mt_dt.x, dmt2t_dt.x) * muv_uv.yyww;
-                    float4 dvmv_factors_du = umu_vmv.y * dlinear_factors_du;
-                    output.tangent_u = normalize(mul(dlinear_factors_du, cp_positions) + mul(dumu_factors_du, cp_d_edge_u) + mul(dvmv_factors_du, cp_d_edge_v));
-
-                    float4 dlinear_factors_dv = muv_uv.xzzx * float4(-1, -1, 1, 1);
-                    float4 dumu_factors_dv = umu_vmv.x * dlinear_factors_dv;
-                    float4 dvmv_factors_dv = muv_uv.xzzx * float4(dmt2t_dt.y, dmt2t_dt.y , dt2mt_dt.y, dt2mt_dt.y);
-                    output.tangent_v = normalize(mul(dlinear_factors_dv, cp_positions) + mul(dumu_factors_dv, cp_d_edge_u) + mul(dvmv_factors_dv, cp_d_edge_v));
-
-                    output.normal = normalize(cross(output.tangent_u, output.tangent_v)); // Normal from tangents
+                        // FIXME when approaching an edge (x/y), tangent(x/y) will be ok, tangent(y/x) and normal are not.
+                        // lerp with normal on edge from quadratic interp. normal seems good. make it seamless ?
+                        // tangent(y/x) can be obtained by cross.
+                    } else {
+                        //
+                        float4 muv_uv_3 = muv_uv * muv_uv * muv_uv;
+                        float3 x_factors = float3(muv_uv_3.x, 3 * umu_vmv.x, muv_uv_3.z);
+                        float3 y_factors = float3(muv_uv_3.y, 3 * umu_vmv.y, muv_uv_3.w);
+    
+                        // Forced to compute these here ; a better place is in the hull constant fn, but crashes the HLSL compiler ("IPC exception").
+                        float3 cp_center_normal = (cp[0].partial_cp_center_normal + cp[1].partial_cp_center_normal + cp[2].partial_cp_center_normal + cp[3].partial_cp_center_normal) / 12.0;
+                        float3 cp_center_tangent = (cp[0].partial_cp_center_tangent + cp[1].partial_cp_center_tangent + cp[2].partial_cp_center_tangent + cp[3].partial_cp_center_tangent) / 12.0;
+                        float3 cp_center_binormal = (cp[0].partial_cp_center_binormal + cp[1].partial_cp_center_binormal + cp[2].partial_cp_center_binormal + cp[3].partial_cp_center_binormal) / 12.0;
+                        output.normal = normalize(
+                            x_factors[0] * mul(y_factors, float3x3(cp[0].vertex.normal_os, cp[3].cp_edge_normal, cp[3].vertex.normal_os)) +
+                            x_factors[1] * mul(y_factors, float3x3(cp[0].cp_edge_normal,   cp_center_normal,     cp[2].cp_edge_normal)) +
+                            x_factors[2] * mul(y_factors, float3x3(cp[1].vertex.normal_os, cp[1].cp_edge_normal, cp[2].vertex.normal_os))
+                        );
+                        output.tangent = normalize(
+                            x_factors[0] * mul(y_factors, float3x3(cp[0].vertex.tangent_os, cp[3].cp_edge_tangent, cp[3].vertex.tangent_os)) +
+                            x_factors[1] * mul(y_factors, float3x3(cp[0].cp_edge_tangent,   cp_center_tangent,     cp[2].cp_edge_tangent)) +
+                            x_factors[2] * mul(y_factors, float3x3(cp[1].vertex.tangent_os, cp[1].cp_edge_tangent, cp[2].vertex.tangent_os))
+                        );
+                        output.binormal = normalize(
+                            x_factors[0] * mul(y_factors, float3x3(cp[0].vertex.binormal_os, cp[3].cp_edge_binormal, cp[3].vertex.binormal_os)) +
+                            x_factors[1] * mul(y_factors, float3x3(cp[0].cp_edge_binormal,   cp_center_binormal,     cp[2].cp_edge_binormal)) +
+                            x_factors[2] * mul(y_factors, float3x3(cp[1].vertex.binormal_os, cp[1].cp_edge_binormal, cp[2].vertex.binormal_os))
+                        );
+                    }
 
                     // Others : linear interpolation
                     output.normal_scale = dot(linear_factors, float4(cp[0].vertex.normal_scale, cp[1].vertex.normal_scale, cp[2].vertex.normal_scale, cp[3].vertex.normal_scale));
@@ -236,12 +310,12 @@ Shader "Lereldarion/PN_Quad" {
                 UNITY_SETUP_INSTANCE_ID (cp[0].vertex);
                 UNITY_TRANSFER_INSTANCE_ID(cp[0].vertex, output);
                 
-                InterpolatedVertexData pn = InterpolatedVertexData::interpolate(cp, patch_uv);
+                InterpolatedVertexData pn = InterpolatedVertexData::interpolate(factors, cp, patch_uv);
 
                 output.position_os = pn.position;
                 output.normal_os = pn.normal;
-                output.tangent_os = pn.tangent_u;
-                output.binormal_os = pn.tangent_v;
+                output.tangent_os = pn.tangent;
+                output.binormal_os = pn.binormal;
                 output.uv = pn.uv;
             }
 
