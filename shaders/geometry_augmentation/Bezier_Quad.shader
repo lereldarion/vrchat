@@ -95,7 +95,8 @@ Shader "Lereldarion/Bezier_Quad" {
 
             struct TrueVertexData {
                 float3 position_os : POSITION;
-                float3 normal_os : NORMAL; // May be non-normalized due to skinning
+                // May be non-normalized due to skinning
+                float3 normal_os : NORMAL;
                 float4 tangent_os : TANGENT;
 
                 float2 uv0 : TEXCOORD0; // Used to guide ruffles : X = direction along ruffles 01, Y = from flat to thick on a ruffle 01.                
@@ -104,17 +105,20 @@ Shader "Lereldarion/Bezier_Quad" {
 
             struct TessellationVertexData {
                 float3 position_os : POSITION_OS;
-                float3 normal_os : NORMAL_OS; // Normalized
+                // Normalized
+                float3 normal_os : NORMAL_OS;
                 float3 tangent_os : TANGENT_OS;
                 float3 binormal_os : BINORMAL_OS;
-                float tangent_w : TBN_SWAP; // tangent.w factor
                 float normal_scale : VERTEX_SCALE;
+                
                 float2 uv0 : TEXCOORD0;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
             struct TessellationControlPoint {
                 TessellationVertexData vertex;
+
+                // Bezier displacement vectors from this vertex
                 float3 d_edge_u : D_EDGE_U;
                 float3 d_edge_v : D_EDGE_V;
             };
@@ -146,7 +150,7 @@ Shader "Lereldarion/Bezier_Quad" {
                 output.normal_os = input.normal_os / output.normal_scale; // Might as well with the length
                 output.tangent_os = normalize(input.tangent_os.xyz);
                 output.binormal_os = normalize(cross(output.normal_os, output.tangent_os)) * input.tangent_os.w;
-                output.tangent_w = input.tangent_os.w;
+
                 output.uv0 = input.uv0;
             }
 
@@ -194,7 +198,6 @@ Shader "Lereldarion/Bezier_Quad" {
                 TessellationVertexData input_u = inputs[id ^ (swaps_axis ? 3 : 1)];
                 TessellationVertexData input_v = inputs[id ^ (swaps_axis ? 1 : 3)];
 
-                // FIXME better way to invert TBN dir properly
                 output.d_edge_u = length(input_u.position_os - input.position_os) * sign(input_u.uv0.x - input.uv0.x) * input.tangent_os;
                 output.d_edge_v = length(input_v.position_os - input.position_os) * sign(input_v.uv0.y - input.uv0.y) * input.binormal_os * unity_WorldTransformParams.w;
                 return output;

@@ -1,3 +1,5 @@
+// UNITY_SHADER_NO_UPGRADE
+//
 // Goal : tessellate only to useful places : curved, on the side, large.
 // Use PN quads to smooth geometry. Less artifacts than triangles.
 
@@ -30,6 +32,7 @@ Shader "Lereldarion/Procedural Ruffles" {
         _Ruffle_Cycles ("Cycle count over uv=[0,1]", Float) = 10
         _Ruffle_Thickness ("Thickness", Float) = 0.01
         _Ruffle_Width ("Width", Float) = 0.01
+        _Ruffle_AlphaY ("Alpha", Range(0.1, 10)) = 0.5
 
         [Header (Tessellation)]
         _Ruffle_Tessellation_Half_Cycle ("Tessellation per half cycle", Integer) = 0
@@ -47,8 +50,6 @@ Shader "Lereldarion/Procedural Ruffles" {
             Cull Off
 
             CGPROGRAM
-// Upgrade NOTE: excluded shader from OpenGL ES 2.0 because it uses non-square matrices
-#pragma exclude_renderers gles
             #pragma target 5.0
             #pragma multi_compile_instancing
             #pragma multi_compile_fwdbase nolightmap nodirlightmap nodynlightmap novertexlight // compile shader into multiple variants, with and without shadows (skip lightmap variants)
@@ -69,13 +70,16 @@ Shader "Lereldarion/Procedural Ruffles" {
                 float3 position_os : POSITION_OS;
                 float3 normal_os : NORMAL_OS;
                 float3 tangent_os : TANGENT_OS;
-                float2 uv : TEXCOORD0;
+                float3 binormal_os : BINORMAL_OS;
+
+                float2 uv0 : TEXCOORD0;
                 UNITY_VERTEX_INPUT_INSTANCE_ID // Setup has been called
             };
 
             struct FragmentData {
                 float4 pos : SV_POSITION; // CS, name required by stupid TRANSFER_SHADOW macro
-                float2 uv : TEXCOORD0;
+                float2 uv0 : TEXCOORD0;
+                float3 normal : NORMAL;
 
                 fixed3 diffuse : DIFFUSE;
                 fixed3 ambient : AMBIENT;
@@ -87,7 +91,8 @@ Shader "Lereldarion/Procedural Ruffles" {
             void vertex_stage(const VertexData input, out FragmentData output) {                
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
                 output.pos = UnityObjectToClipPos (input.position_os);
-                output.uv = input.uv;
+                output.normal = UnityObjectToWorldNormal(input.normal_os);
+                output.uv0 = input.uv0;
 
                 // Basic lighting
                 float3 normal_ws = UnityObjectToWorldNormal(input.normal_os);
@@ -98,11 +103,14 @@ Shader "Lereldarion/Procedural Ruffles" {
 
             uniform fixed4 _Color;
 
-            fixed4 fragment_stage(FragmentData input) : SV_Target {
+            fixed4 fragment_stage(FragmentData input, bool is_front : SV_IsFrontFace) : SV_Target {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX (input);
 
+                if (!is_front) { input.normal = -input.normal; }
+                return fixed4(GammaToLinearSpace(input.normal * 0.5 + 0.5), 1);
+
                 // Basic lighting
-                fixed4 color = _Color * fixed4(input.uv, 0, 1);
+                fixed4 color = _Color;// * fixed4(input.uv0, 0, 1);
                 return color * fixed4 (input.diffuse * SHADOW_ATTENUATION (input) + input.ambient, 1.);
             }
 
@@ -110,9 +118,11 @@ Shader "Lereldarion/Procedural Ruffles" {
 
             struct TrueVertexData {
                 float3 position_os : POSITION;
-                float3 normal_os : NORMAL; // May be non-normalized due to skinning
+                // May be non-normalized due to skinning
+                float3 normal_os : NORMAL;
+                float4 tangent_os : TANGENT;
 
-                float2 uv : TEXCOORD0; // Used to guide ruffles : X = direction along ruffles 01, Y = from flat to thick on a ruffle 01.
+                float2 uv0 : TEXCOORD0; // Used to guide ruffles : X = direction along ruffles 01, Y = from flat to thick on a ruffle 01.
                 // TODO secondary uv to configure thickness & loop count
                 
                 UNITY_VERTEX_INPUT_INSTANCE_ID
@@ -120,13 +130,16 @@ Shader "Lereldarion/Procedural Ruffles" {
 
             struct TessellationVertexData {
                 float3 position_os : POSITION_OS;
-                float3 normal_os : NORMAL_OS; // Normalized
-                float normal_length : NORMAL_LENGTH;
-                float2 uv : TEXCOORD0;
+                // Normalized
+                float3 normal_os : NORMAL_OS;
+                float3 tangent_os : TANGENT_OS;
+                float3 binormal_os : BINORMAL_OS;
+                float normal_scale : VERTEX_SCALE; // Kept to scale ruffle dimensions
+                
+                float2 uv0 : TEXCOORD0;
 
                 // X : ruffle extremum index from 0 to 2 * ruffle_count
-                // Y : thickness track 01
-                float2 ruffle_uv : RUFFLE_UV;
+                float ruffle_half_cycle : RUFFLE_HALF_CYCLE;
 
                 //bool is_culled : CULLING_STATUS; // Early culling test (before tessellation) combines per-vertex values computed here
 
@@ -136,9 +149,9 @@ Shader "Lereldarion/Procedural Ruffles" {
             struct TessellationControlPoint {
                 TessellationVertexData vertex;
 
-                // Pn displacement towards edges along patch u and v
-                float3 pn_d_edge_u : PN_DISPLACEMENT_EDGE_U; // dot(P - Pu, n) n
-                float3 pn_d_edge_v : PN_DISPLACEMENT_EDGE_V; // dot(P - Pv, n) n
+                // Bezier displacement vectors from this vertex
+                float3 d_edge_u : D_EDGE_U;
+                float3 d_edge_v : D_EDGE_V;
             };
 
             struct TessellationFactors {
@@ -160,6 +173,7 @@ Shader "Lereldarion/Procedural Ruffles" {
             uniform float _Ruffle_Cycles;
             uniform float _Ruffle_Thickness;
             uniform float _Ruffle_Width;
+            uniform float _Ruffle_AlphaY;
 
             uniform uint _Ruffle_Tessellation_Half_Cycle; // Edges per half loop
             uniform uint _Ruffle_Tessellation_Y;
@@ -204,14 +218,15 @@ Shader "Lereldarion/Procedural Ruffles" {
                 UNITY_TRANSFER_INSTANCE_ID(input, output);
 
                 output.position_os = input.position_os.xyz;
-                output.normal_length = length(input.normal_os); // Length useful to adjust ruffle thickness with skinning+scaling
-                output.normal_os = input.normal_os / output.normal_length; // Might as well with the length
-                output.uv = input.uv;
+                output.normal_scale = length(input.normal_os); // Length useful to adjust ruffle thickness with skinning+scaling
+                output.normal_os = input.normal_os / output.normal_scale;
+                output.tangent_os = normalize(input.tangent_os.xyz);
+                output.binormal_os = normalize(cross(output.normal_os, output.tangent_os)) * input.tangent_os.w;
 
-                output.ruffle_uv = float2(
-                    round(2.0 * _Ruffle_Cycles * input.uv.x), // [0, 2N], integer. a ruffle takes 2 indexes (up down up)
-                    input.uv.y
-                );
+                output.uv0 = input.uv0;
+
+                // [0, 2N], integer. a ruffle takes 2 indexes (up down up). Necessary to have ruffle data that matches on the edge with the neighboring quad !
+                output.ruffle_half_cycle = round(2.0 * _Ruffle_Cycles * input.uv0.x);
 
                 //output.is_culled = !surface_faces_camera (output.position_ws, output.normal_ws) || !in_frustum (UnityWorldToClipPos (output.position_ws));
             }
@@ -220,20 +235,20 @@ Shader "Lereldarion/Procedural Ruffles" {
                 // Rotate patch to ensure ruffle_uv and patch_uv are aligned.
                 // Align ruffle_uv.y positive slope with patch_uv +Y.
                 // ruffle_uv.x slope is dependent on mesh orientation, so it cannot be fixed here.
-                float2 current_patch_delta_ruffle_y = float2(
-                    (inputs[1].ruffle_uv.y + inputs[2].ruffle_uv.y) - (inputs[0].ruffle_uv.y + inputs[3].ruffle_uv.y), // u
-                    (inputs[2].ruffle_uv.y + inputs[3].ruffle_uv.y) - (inputs[0].ruffle_uv.y + inputs[1].ruffle_uv.y)  // v
+                float2 current_patch_delta_uv0_y = float2(
+                    (inputs[1].uv0.y + inputs[2].uv0.y) - (inputs[0].uv0.y + inputs[3].uv0.y), // u
+                    (inputs[2].uv0.y + inputs[3].uv0.y) - (inputs[0].uv0.y + inputs[1].uv0.y)  // v
                 );
                 // 4 rotations depending on ruffle_uv.y slope orientation
                 [flatten]
-                if (abs(current_patch_delta_ruffle_y.y) >= abs(current_patch_delta_ruffle_y.x)) {
-                    if (current_patch_delta_ruffle_y.y >= 0) {
+                if (abs(current_patch_delta_uv0_y.y) >= abs(current_patch_delta_uv0_y.x)) {
+                    if (current_patch_delta_uv0_y.y >= 0) {
                         return 0; // Slope is +Y
                     } else {
                         return 2; // Slope is -Y, rotate 180
                     }
                 } else {
-                    if (current_patch_delta_ruffle_y.x >= 0) {
+                    if (current_patch_delta_uv0_y.x >= 0) {
                         return 3; // Slope is +X, rotate 270 to return b3 as b0
                     } else {
                         return 1; // Slope is -X, rotate 90 to return b1 as b0
@@ -257,16 +272,17 @@ Shader "Lereldarion/Procedural Ruffles" {
                 UNITY_SETUP_INSTANCE_ID (input);
                 output.vertex = input;
                 
-                // Displacement for edge u/v from this patch corner. Use xor to get the other point ids.
                 bool swaps_axis = rotation & 1 == 1;
-                output.pn_d_edge_u = dot(input.position_os - inputs[id ^ (swaps_axis ? 3 : 1)].position_os, input.normal_os) * input.normal_os;
-                output.pn_d_edge_v = dot(input.position_os - inputs[id ^ (swaps_axis ? 1 : 3)].position_os, input.normal_os) * input.normal_os;
-                
+                TessellationVertexData input_u = inputs[id ^ (swaps_axis ? 3 : 1)];
+                TessellationVertexData input_v = inputs[id ^ (swaps_axis ? 1 : 3)];
+
+                output.d_edge_u = length(input_u.position_os - input.position_os) * sign(input_u.uv0.x - input.uv0.x) * input.tangent_os;
+                output.d_edge_v = length(input_v.position_os - input.position_os) * sign(input_v.uv0.y - input.uv0.y) * input.binormal_os * unity_WorldTransformParams.w;
                 return output;
             }
 
             void hull_patch_constant_stage (const OutputPatch<TessellationControlPoint, 4> cp, out TessellationFactors factors) {
-                float half_cycle_count = abs(cp[2].vertex.ruffle_uv.x - cp[3].vertex.ruffle_uv.x);
+                float half_cycle_count = abs(cp[2].vertex.ruffle_half_cycle - cp[3].vertex.ruffle_half_cycle);
                 float tessellation_x = half_cycle_count * _Ruffle_Tessellation_Half_Cycle; // 0 -> 0, n -> per half cycle
                 
                 factors.inside[0] = factors.edge[1] = factors.edge[3] = tessellation_x;
@@ -275,71 +291,80 @@ Shader "Lereldarion/Procedural Ruffles" {
 
             struct InterpolatedVertexData {
                 float3 position;
-                float3 tangent_u;
+                float3 tangent;
+                float3 binormal;
                 float3 normal;
-                float normal_length;
-                float2 uv;
-                float2 ruffle_uv;
+                float normal_scale;
+
+                float2 uv0;
+                float ruffle_half_cycle;
 
                 static InterpolatedVertexData interpolate(const OutputPatch<TessellationControlPoint, 4> cp, float2 patch_uv) {
                     float4 muv_uv = float4 (1.0 - patch_uv, patch_uv);
                     float2 umu_vmv = muv_uv.xy * muv_uv.zw;
+                    float4 linear_factors = muv_uv.xzzx * muv_uv.yyww;
+                    float2 edge_factors = umu_vmv * (2.0 * patch_uv - 1.0);
 
-                    float4 linear_cp_factor = muv_uv.xzzx * muv_uv.yyww;
-                    float4 umu_factors = umu_vmv.x * linear_cp_factor;
-                    float4 vmv_factors = umu_vmv.y * linear_cp_factor;
+                    float4 dlinear_factors_dx = float4(-1, 1, 1, -1) * muv_uv.yyww;
+                    float4 dlinear_factors_dy = muv_uv.xzzx * float4(-1, -1, 1, 1);
 
-                    float4 dlinear_cp_factor_du = float4(-1, 1, 1, -1) * muv_uv.yyww;
-                    float du2mu_du = (2.0 - 3.0 * patch_uv.x) * patch_uv.x;
-                    float dmu2u_du = 1 + (-4 + 3.0 * patch_uv.x) * patch_uv.x;
-                    float4 dumu_factors_du = float4(dmu2u_du, du2mu_du, du2mu_du, dmu2u_du) * muv_uv.yyww;
-                    float4 dvmv_factors_du = umu_vmv.y * dlinear_cp_factor_du;
+                    float2 dt2mt = (-3.0 * patch_uv + 2.0) * patch_uv; // (du2mu_du, dv2mv_dv)
+                    float2 dmt2t = (3.0 * patch_uv - 4.0) * patch_uv + 1.0; // (dmu2u_du, dmv2v_dv)
+                    float2 dedge_factors = (-6.0 * patch_uv + 6.0) * patch_uv - 1.0;
 
                     InterpolatedVertexData output;
 
-                    // PN vertex displacement, using linear interpolate between bezier displacement on edges
+                    float4x3 cp_positions = float4x3(cp[0].vertex.position_os, cp[1].vertex.position_os, cp[2].vertex.position_os, cp[3].vertex.position_os);
+                    float4x3 cp_d_edge_u = float4x3(cp[0].d_edge_u, cp[1].d_edge_u, cp[2].d_edge_u, cp[3].d_edge_u);
+                    float4x3 cp_d_edge_v = float4x3(cp[0].d_edge_v, cp[1].d_edge_v, cp[2].d_edge_v, cp[3].d_edge_v);
+                    float4x3 edges = float4x3(cp_positions[3] - cp_positions[0], cp_positions[1] - cp_positions[0], cp_positions[2] - cp_positions[1], cp_positions[2] - cp_positions[3]);
+
                     output.position = (
-                        linear_cp_factor[0] * cp[0].vertex.position_os +
-                        linear_cp_factor[1] * cp[1].vertex.position_os +
-                        linear_cp_factor[2] * cp[2].vertex.position_os +
-                        linear_cp_factor[3] * cp[3].vertex.position_os +
-                        umu_factors[0] * cp[0].pn_d_edge_u + umu_factors[1] * cp[1].pn_d_edge_u + umu_factors[2] * cp[2].pn_d_edge_u + umu_factors[3] * cp[3].pn_d_edge_u +
-                        vmv_factors[0] * cp[0].pn_d_edge_v + vmv_factors[1] * cp[1].pn_d_edge_v + vmv_factors[2] * cp[2].pn_d_edge_v + vmv_factors[3] * cp[3].pn_d_edge_v
-                    );               
-                    // u tangent : derive position by u
-                    output.tangent_u = normalize(
-                        dlinear_cp_factor_du[0] * cp[0].vertex.position_os +
-                        dlinear_cp_factor_du[1] * cp[1].vertex.position_os +
-                        dlinear_cp_factor_du[2] * cp[2].vertex.position_os +
-                        dlinear_cp_factor_du[3] * cp[3].vertex.position_os +
-                        dumu_factors_du[0] * cp[0].pn_d_edge_u + dumu_factors_du[1] * cp[1].pn_d_edge_u + dumu_factors_du[2] * cp[2].pn_d_edge_u + dumu_factors_du[3] * cp[3].pn_d_edge_u +
-                        dvmv_factors_du[0] * cp[0].pn_d_edge_v + dvmv_factors_du[1] * cp[1].pn_d_edge_v + dvmv_factors_du[2] * cp[2].pn_d_edge_v + dvmv_factors_du[3] * cp[3].pn_d_edge_v
+                        mul(linear_factors, cp_positions) +
+                        umu_vmv.x * mul(linear_factors, cp_d_edge_u) +
+                        umu_vmv.y * mul(linear_factors, cp_d_edge_v) +
+                        mul(muv_uv * edge_factors.yxyx, edges)
                     );
-                    // Normals : linear interpolation
-                    output.normal = normalize(
-                        linear_cp_factor[0] * cp[0].vertex.normal_os +
-                        linear_cp_factor[1] * cp[1].vertex.normal_os +
-                        linear_cp_factor[2] * cp[2].vertex.normal_os +
-                        linear_cp_factor[3] * cp[3].vertex.normal_os
+
+                    // Derivatives give us a proper tangent+binormal, except on the edge where they are not continuous with other patches.
+                    float3 dposition_dx = (
+                        mul(dlinear_factors_dx, cp_positions) +
+                        mul(float4(dmt2t.x, dt2mt.x, dt2mt.x, dmt2t.x) * muv_uv.yyww, cp_d_edge_u) +
+                        umu_vmv.y * mul(dlinear_factors_dx, cp_d_edge_v) +
+                        mul(float4(-edge_factors.y, muv_uv.y * dedge_factors.x, edge_factors.y, muv_uv.w * dedge_factors.x), edges)
                     );
-                    output.normal_length = (
-                        linear_cp_factor[0] * cp[0].vertex.normal_length +
-                        linear_cp_factor[1] * cp[1].vertex.normal_length +
-                        linear_cp_factor[2] * cp[2].vertex.normal_length +
-                        linear_cp_factor[3] * cp[3].vertex.normal_length
+                    float3 dposition_dy = (
+                        mul(dlinear_factors_dy, cp_positions) +
+                        umu_vmv.x * mul(dlinear_factors_dy, cp_d_edge_u) +
+                        mul(muv_uv.xzzx * float4(dmt2t.y, dmt2t.y , dt2mt.y, dt2mt.y), cp_d_edge_v) +
+                        mul(float4(muv_uv.x * dedge_factors.y, -edge_factors.x, muv_uv.z * dedge_factors.y, edge_factors.x), edges)
                     );
-                    output.uv = (
-                        linear_cp_factor[0] * cp[0].vertex.uv +
-                        linear_cp_factor[1] * cp[1].vertex.uv +
-                        linear_cp_factor[2] * cp[2].vertex.uv +
-                        linear_cp_factor[3] * cp[3].vertex.uv
-                    );
-                    output.ruffle_uv = (
-                        linear_cp_factor[0] * cp[0].vertex.ruffle_uv +
-                        linear_cp_factor[1] * cp[1].vertex.ruffle_uv +
-                        linear_cp_factor[2] * cp[2].vertex.ruffle_uv +
-                        linear_cp_factor[3] * cp[3].vertex.ruffle_uv
-                    );
+                    float3 tangent_dir = dposition_dx * sign(cp[1].vertex.uv0.x - cp[0].vertex.uv0.x);
+                    float3 binormal_dir = dposition_dy * sign(cp[3].vertex.uv0.y - cp[0].vertex.uv0.y) * unity_WorldTransformParams.w;
+
+                    // On the edges, the tangent/binormal in line with the edge is ok. But the other is not, so use a linear interpolation.
+                    float2 distance_to_edges = 0.5 - abs(patch_uv - 0.5);
+                    float distance_threshold = 0.01;
+                    float2 edge_approximation_lerp = distance_to_edges / distance_threshold; // 0 at edge, 1 at threshold, more inside
+                    if(edge_approximation_lerp.x < 1) {
+                        float3 interpolated = mul(linear_factors, float4x3(cp[0].vertex.tangent_os, cp[1].vertex.tangent_os, cp[2].vertex.tangent_os, cp[3].vertex.tangent_os));
+                        tangent_dir = lerp(interpolated, tangent_dir, edge_approximation_lerp.x);
+                    }
+                    if(edge_approximation_lerp.y < 1) {
+                        float3 interpolated = mul(linear_factors, float4x3(cp[0].vertex.binormal_os, cp[1].vertex.binormal_os, cp[2].vertex.binormal_os, cp[3].vertex.binormal_os));
+                        binormal_dir = lerp(interpolated, binormal_dir, edge_approximation_lerp.y);
+                    }
+
+                    // Finalize TBN
+                    output.tangent = normalize(tangent_dir);
+                    output.binormal = normalize(binormal_dir);
+                    output.normal = normalize(cross(output.binormal, output.tangent)); 
+                    output.normal_scale = dot(linear_factors, float4(cp[0].vertex.normal_scale, cp[1].vertex.normal_scale, cp[2].vertex.normal_scale, cp[3].vertex.normal_scale));
+
+                    // Other values
+                    output.uv0 = mul(linear_factors, float4x2(cp[0].vertex.uv0, cp[1].vertex.uv0, cp[2].vertex.uv0, cp[3].vertex.uv0));
+                    output.ruffle_half_cycle = dot(linear_factors, float4(cp[0].vertex.ruffle_half_cycle, cp[1].vertex.ruffle_half_cycle, cp[2].vertex.ruffle_half_cycle, cp[3].vertex.ruffle_half_cycle));
+
                     return output;
                 }
             };
@@ -356,20 +381,32 @@ Shader "Lereldarion/Procedural Ruffles" {
                 float3 back;
                 float3 forward;
 
-                static RuffleControlPoints compute(InterpolatedVertexData pn, float half_loop_range, bool half_cycle_is_pair) {
+                float3 dhalf_cycle_dy;
+                float3 dsides_dy;
+
+                static RuffleControlPoints compute(InterpolatedVertexData pn, bool half_cycle_is_pair) {
+                    RuffleControlPoints cp;
+
                     float half_thickness = 0.5 * _Ruffle_Thickness;
                     float half_width = 0.5 * _Ruffle_Width;
-                    float lateral_thickness = sqrt(pow(_Ruffle_Thickness, 2.0) - pow(half_width, 2.0)) - half_thickness;
+                    float lateral_thickness = sqrt(pow(_Ruffle_Thickness, 2.0) - pow(half_width, 2.0)) - half_thickness; // reduce thickness on the side cp
+                    
+                    float3 scaled_normal = pn.normal * (half_cycle_is_pair ? 1.0 : -1.0) * pn.normal_scale;
+                    float3 tangent_u_delta = pn.tangent * pn.normal_scale * half_width;
+                    float3 scaled_tangent_v = pn.binormal * pn.normal_scale;
+                    
+                    float inv_m_exp_m_alpha = 1.0 / (1.0 - exp(-_Ruffle_AlphaY));
+                    float exp_m_alpha_y = exp(-_Ruffle_AlphaY * pn.uv0.y);
+                    float y_scaling = (1.0 - exp_m_alpha_y) * inv_m_exp_m_alpha;
+                    float dy_scaling_dy = _Ruffle_AlphaY * exp_m_alpha_y * inv_m_exp_m_alpha;
+                    
+                    cp.half_cycle = pn.position + scaled_normal * half_thickness * y_scaling;
+                    cp.back = pn.position + scaled_normal * lateral_thickness * y_scaling - tangent_u_delta;
+                    cp.forward = pn.position + scaled_normal * lateral_thickness * y_scaling + tangent_u_delta;
 
-                    float3 scaled_normal = pn.normal * (half_cycle_is_pair ? 1.0 : -1.0) * pn.normal_length;
-                    float3 lateral = pn.tangent_u * sign(half_loop_range) * pn.normal_length * half_width;
-
-                    // From geometric figure
-
-                    RuffleControlPoints cp;
-                    cp.half_cycle = pn.position + scaled_normal * half_thickness;
-                    cp.back = pn.position + scaled_normal * lateral_thickness - lateral;
-                    cp.forward = pn.position + scaled_normal * lateral_thickness + lateral;
+                    // dy_scaling_dy : slope of vector dpos_dy in the (tangent_v, normal) plane
+                    cp.dhalf_cycle_dy = scaled_normal * half_thickness * dy_scaling_dy + scaled_tangent_v;
+                    cp.dsides_dy = scaled_normal * lateral_thickness * dy_scaling_dy + scaled_tangent_v; // same for both
                     return cp;
                 }
             };
@@ -384,7 +421,7 @@ Shader "Lereldarion/Procedural Ruffles" {
                 InterpolatedVertexData pn = InterpolatedVertexData::interpolate(cp, patch_uv);
 
                 // Half loop positionning
-                float half_cycle = pn.ruffle_uv.x;
+                float half_cycle = pn.ruffle_half_cycle;
                 float half_cycle_before = floor(half_cycle);
                 float half_cycle_after = half_cycle_before + 1.0;
                 float offset_01_within_half_cycle = frac(half_cycle);
@@ -395,83 +432,64 @@ Shader "Lereldarion/Procedural Ruffles" {
                 // Sample PN surface at neighboring half loop extremities
                 float2 patch_uv_half_loop_before = patch_uv;
                 float2 patch_uv_half_loop_after = patch_uv;
-                float half_loop_range = cp[2].vertex.ruffle_uv.x - cp[3].vertex.ruffle_uv.x;
+                float half_loop_range = cp[2].vertex.ruffle_half_cycle - cp[3].vertex.ruffle_half_cycle;
                 //if(half_loop_range == 0.0) { half_loop_range = 1.0; }
-                patch_uv_half_loop_before.x = (half_cycle_before - cp[3].vertex.ruffle_uv.x) / half_loop_range;
-                patch_uv_half_loop_after.x = (half_cycle_after - cp[3].vertex.ruffle_uv.x) / half_loop_range;
+                patch_uv_half_loop_before.x = (half_cycle_before - cp[3].vertex.ruffle_half_cycle) / half_loop_range;
+                patch_uv_half_loop_after.x = (half_cycle_after - cp[3].vertex.ruffle_half_cycle) / half_loop_range;
                 InterpolatedVertexData pn_half_cycle_before = InterpolatedVertexData::interpolate(cp, patch_uv_half_loop_before);
                 InterpolatedVertexData pn_half_cycle_after = InterpolatedVertexData::interpolate(cp, patch_uv_half_loop_after);
 
                 // Use them and tangent to create b spline control points
                 bool hc_before_is_pair = frac(0.5 * half_cycle_before) < 0.25;
-                RuffleControlPoints cp_before = RuffleControlPoints::compute(pn_half_cycle_before, half_loop_range, hc_before_is_pair);
-                RuffleControlPoints cp_after = RuffleControlPoints::compute(pn_half_cycle_after, half_loop_range, !hc_before_is_pair);
+                RuffleControlPoints cp_before = RuffleControlPoints::compute(pn_half_cycle_before, hc_before_is_pair);
+                RuffleControlPoints cp_after = RuffleControlPoints::compute(pn_half_cycle_after, !hc_before_is_pair);
 
-                float3 spline_cp[4];
+                float4x3 spline_cp;
+                float4x3 spline_dy_cp;
                 if (spline_segment_within_half_cycle < 0.5) {
-                    spline_cp[0] = cp_before.back;
-                    spline_cp[1] = cp_before.half_cycle;
-                    spline_cp[2] = cp_before.forward;
-                    spline_cp[3] = cp_after.back;
+                    spline_cp = float4x3(cp_before.back, cp_before.half_cycle, cp_before.forward, cp_after.back);
+                    spline_dy_cp = float4x3(cp_before.dsides_dy, cp_before.dhalf_cycle_dy, cp_before.dsides_dy, cp_after.dsides_dy);
                 } else if (spline_segment_within_half_cycle < 1.5) {
-                    spline_cp[0] = cp_before.half_cycle;
-                    spline_cp[1] = cp_before.forward;
-                    spline_cp[2] = cp_after.back;
-                    spline_cp[3] = cp_after.half_cycle;
+                    spline_cp = float4x3(cp_before.half_cycle, cp_before.forward, cp_after.back, cp_after.half_cycle);
+                    spline_dy_cp = float4x3(cp_before.dhalf_cycle_dy, cp_before.dsides_dy, cp_after.dsides_dy, cp_after.dhalf_cycle_dy);
                 } else {
-                    spline_cp[0] = cp_before.forward;
-                    spline_cp[1] = cp_after.back;
-                    spline_cp[2] = cp_after.half_cycle;
-                    spline_cp[3] = cp_after.forward;
+                    spline_cp = float4x3(cp_before.forward, cp_after.back, cp_after.half_cycle, cp_after.forward);
+                    spline_dy_cp = float4x3(cp_before.dsides_dy, cp_after.dsides_dy, cp_after.dhalf_cycle_dy, cp_after.dsides_dy);
                 }
 
                 // Spline interpolation position
-                float4x4 spline_coefficients = (1.0 / 6.0) * float4x4(
+                float spline_t = offset_within_spline_segment;
+                float4 spline_t3_t2_t_1 = float4(spline_t * spline_t * spline_t, spline_t * spline_t, spline_t, 1.0);
+                float4x4 spline_position_coefficients = (1.0 / 6.0) * float4x4(
                     -1.0, 3.0, -3.0, 1.0, // t^3
                     3.0, -6.0, 3.0, 0.0, // t^2
                     -3.0, 0.0, 3.0, 0.0, // t
                     1.0, 4.0, 1.0, 0.0 // 1
                 );
-                float4 spline_b = spline_coefficients[0];
-                spline_b = offset_within_spline_segment * spline_b + spline_coefficients[1];
-                spline_b = offset_within_spline_segment * spline_b + spline_coefficients[2];
-                spline_b = offset_within_spline_segment * spline_b + spline_coefficients[3];
+                float4 spline_b = mul(spline_t3_t2_t_1, spline_position_coefficients);
+                synthesized_input.position_os = mul(spline_b, spline_cp);
 
-                synthesized_input.position_os = (
-                    spline_b[0] * spline_cp[0] +
-                    spline_b[1] * spline_cp[1] +
-                    spline_b[2] * spline_cp[2] +
-                    spline_b[3] * spline_cp[3]
+                // Spline derivative = tangent along spline.
+                // TODO tangent for +ruffle_uv.x, may need to be aligned to patch for winding
+                float3x4 spline_tangent_u_coefficients = float3x4(
+                    spline_position_coefficients[0] * 3, // t^2
+                    spline_position_coefficients[1] * 2, // t
+                    spline_position_coefficients[2] // 1
                 );
+                float3 tangent_ruffle_x = normalize(mul(mul(spline_t3_t2_t_1.yzw, spline_tangent_u_coefficients), spline_cp));
+                synthesized_input.tangent_os = tangent_ruffle_x * sign(half_loop_range);
+                
+                // Binormal = tangent_v = derivative of surface along +y. Interpolate +y derivatives along the spline.
+                synthesized_input.binormal_os = normalize(mul(spline_b, spline_dy_cp));
 
-                // Spline derivative = tangent along spline
-                float3x4 spline_derivative_coefficients = float3x4(
-                    spline_coefficients[0] * 3, // t^2
-                    spline_coefficients[1] * 2, // t
-                    spline_coefficients[2] // 1
-                );
-                float4 spline_derivative_b = spline_derivative_coefficients[0];
-                spline_derivative_b = offset_within_spline_segment * spline_derivative_b + spline_derivative_coefficients[1];
-                spline_derivative_b = offset_within_spline_segment * spline_derivative_b + spline_derivative_coefficients[2];
-
-                synthesized_input.tangent_os = normalize(
-                    spline_derivative_b[0] * spline_cp[0] +
-                    spline_derivative_b[1] * spline_cp[1] +
-                    spline_derivative_b[2] * spline_cp[2] +
-                    spline_derivative_b[3] * spline_cp[3]
-                );
-
-                // TODO curve along y.
-                // TODO binormal from dcurve_y
-                // TODO normal from cross
+                // Normal from cross
+                synthesized_input.normal_os = normalize(cross(synthesized_input.tangent_os, synthesized_input.binormal_os));
 
                 //synthesized_input.position_os = lerp(spline_cp[1], spline_cp[2], offset_within_spline_segment);
-                //synthesized_input.position_os = lerp(cp_before.half_cycle + _Ruffle_Test * pn_half_cycle_before.tangent_u, cp_after.half_cycle + _Ruffle_Test * pn_half_cycle_after.tangent_u, offset_01_within_half_cycle);
+                //synthesized_input.position_os = lerp(cp_before.half_cycle, cp_after.half_cycle, offset_01_within_half_cycle);
                 //synthesized_input.position_os = pn.position;
                 
-                synthesized_input.uv = pn.uv;
-
-                synthesized_input.normal_os = pn.normal;
+                synthesized_input.uv0 = pn.uv0;
                 
                 vertex_stage(synthesized_input, output);
             }
