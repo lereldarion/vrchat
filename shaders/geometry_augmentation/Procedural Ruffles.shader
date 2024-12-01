@@ -25,6 +25,8 @@
 
 Shader "Lereldarion/Procedural Ruffles" {
     Properties {
+        [Toggle(TBN)] _Mode_TBN ("Show TBN instead of surface", Float) = 0
+
         [Header (Standard Shader Parameters)]
         _Color ("Color", Color) = (1,1,1,1)
 
@@ -33,6 +35,7 @@ Shader "Lereldarion/Procedural Ruffles" {
         _Ruffle_Thickness ("Thickness", Float) = 0.01
         _Ruffle_Width ("Width", Float) = 0.01
         _Ruffle_AlphaY ("Alpha", Range(0.1, 10)) = 0.5
+        _Ruffle_Rounding_Error_Fix_Offset ("Offset used to avoid rounding errors", Range(0, 1)) = 0.123
 
         [Header (Tessellation)]
         _Ruffle_Tessellation_Half_Cycle ("Tessellation per half cycle", Integer) = 0
@@ -57,6 +60,7 @@ Shader "Lereldarion/Procedural Ruffles" {
             #pragma vertex true_vertex_stage
             #pragma hull hull_control_point_stage
             #pragma domain domain_stage
+            #pragma geometry geometry_stage
             #pragma fragment fragment_stage
 
             #include "UnityCG.cginc"
@@ -103,7 +107,7 @@ Shader "Lereldarion/Procedural Ruffles" {
 
             uniform fixed4 _Color;
 
-            fixed4 fragment_stage(FragmentData input, bool is_front : SV_IsFrontFace) : SV_Target {
+            fixed4 fragment_stage_(FragmentData input, bool is_front : SV_IsFrontFace) : SV_Target {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX (input);
 
                 if (!is_front) { input.normal = -input.normal; }
@@ -174,6 +178,7 @@ Shader "Lereldarion/Procedural Ruffles" {
             uniform float _Ruffle_Thickness;
             uniform float _Ruffle_Width;
             uniform float _Ruffle_AlphaY;
+            uniform float _Ruffle_Rounding_Error_Fix_Offset;
 
             uniform uint _Ruffle_Tessellation_Half_Cycle; // Edges per half loop
             uniform uint _Ruffle_Tessellation_Y;
@@ -226,7 +231,7 @@ Shader "Lereldarion/Procedural Ruffles" {
                 output.uv0 = input.uv0;
 
                 // [0, 2N], integer. a ruffle takes 2 indexes (up down up). Necessary to have ruffle data that matches on the edge with the neighboring quad !
-                output.ruffle_half_cycle = round(2.0 * _Ruffle_Cycles * input.uv0.x);
+                output.ruffle_half_cycle = round(2.0 * _Ruffle_Cycles * input.uv0.x + _Ruffle_Rounding_Error_Fix_Offset);
 
                 //output.is_culled = !surface_faces_camera (output.position_ws, output.normal_ws) || !in_frustum (UnityWorldToClipPos (output.position_ws));
             }
@@ -300,6 +305,8 @@ Shader "Lereldarion/Procedural Ruffles" {
                 float ruffle_half_cycle;
 
                 static InterpolatedVertexData interpolate(const OutputPatch<TessellationControlPoint, 4> cp, float2 patch_uv) {
+                    float2 uv0_signs = sign(float2(cp[1].vertex.uv0.x - cp[0].vertex.uv0.x, cp[3].vertex.uv0.y - cp[0].vertex.uv0.y));
+
                     float4 muv_uv = float4 (1.0 - patch_uv, patch_uv);
                     float2 umu_vmv = muv_uv.xy * muv_uv.zw;
                     float4 linear_factors = muv_uv.xzzx * muv_uv.yyww;
@@ -339,8 +346,8 @@ Shader "Lereldarion/Procedural Ruffles" {
                         mul(muv_uv.xzzx * float4(dmt2t.y, dmt2t.y , dt2mt.y, dt2mt.y), cp_d_edge_v) +
                         mul(float4(muv_uv.x * dedge_factors.y, -edge_factors.x, muv_uv.z * dedge_factors.y, edge_factors.x), edges)
                     );
-                    float3 tangent_dir = dposition_dx * sign(cp[1].vertex.uv0.x - cp[0].vertex.uv0.x);
-                    float3 binormal_dir = dposition_dy * sign(cp[3].vertex.uv0.y - cp[0].vertex.uv0.y) * unity_WorldTransformParams.w;
+                    float3 tangent_dir = dposition_dx * uv0_signs.x;
+                    float3 binormal_dir = dposition_dy * uv0_signs.y * unity_WorldTransformParams.w;
 
                     // On the edges, the tangent/binormal in line with the edge is ok. But the other is not, so use a linear interpolation.
                     float2 distance_to_edges = 0.5 - abs(patch_uv - 0.5);
@@ -358,7 +365,7 @@ Shader "Lereldarion/Procedural Ruffles" {
                     // Finalize TBN
                     output.tangent = normalize(tangent_dir);
                     output.binormal = normalize(binormal_dir);
-                    output.normal = normalize(cross(output.binormal, output.tangent)); 
+                    output.normal = normalize(cross(output.tangent, output.binormal)) * uv0_signs.x; 
                     output.normal_scale = dot(linear_factors, float4(cp[0].vertex.normal_scale, cp[1].vertex.normal_scale, cp[2].vertex.normal_scale, cp[3].vertex.normal_scale));
 
                     // Other values
@@ -412,7 +419,7 @@ Shader "Lereldarion/Procedural Ruffles" {
             };
 
             [domain ("quad")]
-            void domain_stage (const TessellationFactors factors, const OutputPatch<TessellationControlPoint, 4> cp, float2 patch_uv : SV_DomainLocation, out FragmentData output) {
+            void domain_stage (const TessellationFactors factors, const OutputPatch<TessellationControlPoint, 4> cp, float2 patch_uv : SV_DomainLocation, out VertexData output) {
                 UNITY_SETUP_INSTANCE_ID (cp[0].vertex);
 
                 VertexData synthesized_input;
@@ -433,7 +440,6 @@ Shader "Lereldarion/Procedural Ruffles" {
                 float2 patch_uv_half_loop_before = patch_uv;
                 float2 patch_uv_half_loop_after = patch_uv;
                 float half_loop_range = cp[2].vertex.ruffle_half_cycle - cp[3].vertex.ruffle_half_cycle;
-                //if(half_loop_range == 0.0) { half_loop_range = 1.0; }
                 patch_uv_half_loop_before.x = (half_cycle_before - cp[3].vertex.ruffle_half_cycle) / half_loop_range;
                 patch_uv_half_loop_after.x = (half_cycle_after - cp[3].vertex.ruffle_half_cycle) / half_loop_range;
                 InterpolatedVertexData pn_half_cycle_before = InterpolatedVertexData::interpolate(cp, patch_uv_half_loop_before);
@@ -477,21 +483,93 @@ Shader "Lereldarion/Procedural Ruffles" {
                     spline_position_coefficients[2] // 1
                 );
                 float3 tangent_ruffle_x = normalize(mul(mul(spline_t3_t2_t_1.yzw, spline_tangent_u_coefficients), spline_cp));
-                synthesized_input.tangent_os = tangent_ruffle_x * sign(half_loop_range);
+                synthesized_input.tangent_os = tangent_ruffle_x;
                 
                 // Binormal = tangent_v = derivative of surface along +y. Interpolate +y derivatives along the spline.
                 synthesized_input.binormal_os = normalize(mul(spline_b, spline_dy_cp));
 
                 // Normal from cross
-                synthesized_input.normal_os = normalize(cross(synthesized_input.tangent_os, synthesized_input.binormal_os));
+                synthesized_input.normal_os = normalize(cross(synthesized_input.tangent_os, synthesized_input.binormal_os)) * sign(half_loop_range);
 
                 //synthesized_input.position_os = lerp(spline_cp[1], spline_cp[2], offset_within_spline_segment);
                 //synthesized_input.position_os = lerp(cp_before.half_cycle, cp_after.half_cycle, offset_01_within_half_cycle);
                 //synthesized_input.position_os = pn.position;
                 
                 synthesized_input.uv0 = pn.uv0;
+                output = synthesized_input;
+                // FIXME vertex_stage(synthesized_input, output);
+            }
+
+            /////// TBN debug
+
+            struct FragmentInput {
+                float4 position : SV_POSITION; // CS as rasterizer input, screenspace as fragment input
+                float3 color : EDGE_COLOR;
+                UNITY_VERTEX_OUTPUT_STEREO
+            };
+            
+            void draw_vector(inout LineStream<FragmentInput> stream, float3 origin, float3 direction, float3 color) {
+                FragmentInput output;
+                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
+                output.color = color;
+
+                output.position = UnityObjectToClipPos(origin);
+                stream.Append(output);
                 
-                vertex_stage(synthesized_input, output);
+                output.position = UnityObjectToClipPos(origin + direction);
+                stream.Append(output);
+
+                stream.RestartStrip();
+            }
+            void draw_tbn(inout LineStream<FragmentInput> stream, VertexData input, float length) {
+                draw_vector(stream, input.position_os, input.tangent_os * length, float3(1, 0, 0));
+                draw_vector(stream, input.position_os, input.binormal_os * length, float3(0, 1, 0));
+                draw_vector(stream, input.position_os, input.normal_os * length, float3(0, 0, 1));
+            }
+
+            #pragma shader_feature_local TBN
+            #if TBN
+            [maxvertexcount(18)]
+            void geometry_stage(triangle VertexData input[3], uint triangle_id : SV_PrimitiveID, inout LineStream<FragmentInput> stream) {
+                UNITY_SETUP_INSTANCE_ID(input[0]);
+
+                float length = sqrt(min(
+                    length_sq(input[0].position_os - input[1].position_os),
+                    min(
+                        length_sq(input[0].position_os - input[2].position_os),
+                        length_sq(input[1].position_os - input[2].position_os)
+                    )
+                ));
+                float display_length = 0.7 * length;
+                draw_tbn(stream, input[0], display_length);
+                draw_tbn(stream, input[1], display_length);
+                draw_tbn(stream, input[2], display_length);
+            }
+            #else // Triangle
+            [maxvertexcount(3)]
+            void geometry_stage(triangle VertexData input[3], uint triangle_id : SV_PrimitiveID, inout TriangleStream<FragmentInput> stream) {
+                UNITY_SETUP_INSTANCE_ID(input[0]);
+                FragmentInput output;
+                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
+                output.color = float3(1, 1, 1);
+
+                output.position = UnityObjectToClipPos(input[0].position_os);
+                output.color = float3(input[0].uv0, 0);
+                stream.Append(output);
+
+                output.position = UnityObjectToClipPos(input[1].position_os);
+                output.color = float3(input[1].uv0, 0);
+                stream.Append(output);
+
+                output.position = UnityObjectToClipPos(input[2].position_os);
+                output.color = float3(input[2].uv0, 0);
+                stream.Append(output);
+            }
+            #endif
+
+            fixed4 fragment_stage (FragmentInput input) : SV_Target {
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
+                return fixed4(input.color, 1);
             }
 
             ENDCG

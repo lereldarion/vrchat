@@ -87,7 +87,7 @@ Shader "Lereldarion/Bezier_Quad" {
                 float3 tangent_os : TANGENT_OS;
                 float3 binormal_os : BINORMAL_OS;
                 float2 uv0 : TEXCOORD0;
-                float3 other : OTHER;
+                float3 binormal_linear_interpolation : BINORMAL_LINEAR_INTERPOLATION;
                 UNITY_VERTEX_INPUT_INSTANCE_ID // Setup has been called
             };
 
@@ -215,9 +215,11 @@ Shader "Lereldarion/Bezier_Quad" {
                 float3 normal;
                 float2 uv0;
 
-                float3 other;
+                float3 binormal_linear_interpolation;
 
                 static InterpolatedVertexData interpolate(const OutputPatch<TessellationControlPoint, 4> cp, float2 patch_uv) {
+                    float2 uv0_signs = sign(float2(cp[1].vertex.uv0.x - cp[0].vertex.uv0.x, cp[3].vertex.uv0.y - cp[0].vertex.uv0.y));
+
                     float4 muv_uv = float4 (1.0 - patch_uv, patch_uv);
                     float2 umu_vmv = muv_uv.xy * muv_uv.zw;
                     float4 linear_factors = muv_uv.xzzx * muv_uv.yyww;
@@ -257,8 +259,8 @@ Shader "Lereldarion/Bezier_Quad" {
                         mul(muv_uv.xzzx * float4(dmt2t.y, dmt2t.y , dt2mt.y, dt2mt.y), cp_d_edge_v) +
                         mul(float4(muv_uv.x * dedge_factors.y, -edge_factors.x, muv_uv.z * dedge_factors.y, edge_factors.x), edges)
                     );
-                    float3 tangent_dir = dposition_dx * sign(cp[1].vertex.uv0.x - cp[0].vertex.uv0.x);
-                    float3 binormal_dir = dposition_dy * sign(cp[3].vertex.uv0.y - cp[0].vertex.uv0.y) * unity_WorldTransformParams.w;
+                    float3 tangent_dir = dposition_dx * uv0_signs.x;
+                    float3 binormal_dir = dposition_dy * uv0_signs.y * unity_WorldTransformParams.w;
 
                     // On the edges, the tangent/binormal in line with the edge is ok. But the other is not, so use a linear interpolation.
                     float2 distance_to_edges = 0.5 - abs(patch_uv - 0.5);
@@ -276,9 +278,9 @@ Shader "Lereldarion/Bezier_Quad" {
                     // Finalize TBN
                     output.tangent = normalize(tangent_dir);
                     output.binormal = normalize(binormal_dir);
-                    output.normal = normalize(cross(output.binormal, output.tangent)); 
+                    output.normal = normalize(cross(output.tangent, output.binormal)) * uv0_signs.x;
 
-                    output.other = normalize(mul(linear_factors, float4x3(cp[0].vertex.binormal_os, cp[1].vertex.binormal_os, cp[2].vertex.binormal_os, cp[3].vertex.binormal_os)));
+                    output.binormal_linear_interpolation = normalize(mul(linear_factors, float4x3(cp[0].vertex.binormal_os, cp[1].vertex.binormal_os, cp[2].vertex.binormal_os, cp[3].vertex.binormal_os)));
 
                     output.uv0 = mul(linear_factors, float4x2(cp[0].vertex.uv0, cp[1].vertex.uv0, cp[2].vertex.uv0, cp[3].vertex.uv0));
 
@@ -297,7 +299,7 @@ Shader "Lereldarion/Bezier_Quad" {
                 output.normal_os = pn.normal;
                 output.tangent_os = pn.tangent;
                 output.binormal_os = pn.binormal;
-                output.other = pn.other;
+                output.binormal_linear_interpolation = pn.binormal_linear_interpolation;
                 output.uv0 = pn.uv0;
             }
 
@@ -326,7 +328,7 @@ Shader "Lereldarion/Bezier_Quad" {
                 draw_vector(stream, input.position_os, input.tangent_os * length, float3(1, 0, 0));
                 draw_vector(stream, input.position_os, input.binormal_os * length, float3(0, 1, 0));
                 draw_vector(stream, input.position_os, input.normal_os * length, float3(0, 0, 1));
-                draw_vector(stream, input.position_os, input.other * length, float3(1, 1, 0));
+                draw_vector(stream, input.position_os, input.binormal_linear_interpolation * 0.5 * length, float3(1, 1, 0));
             }
 
             float length_sq(float3 v) {
