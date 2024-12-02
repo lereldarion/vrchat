@@ -73,7 +73,7 @@ Shader "Lereldarion/Procedural Ruffles" {
             struct VertexData {
                 float3 position_os : POSITION_OS;
                 float3 normal_os : NORMAL_OS;
-                float3 tangent_os : TANGENT_OS;
+                float4 tangent_os : TANGENT_OS; // + tangent.w to rebuild binormal. Not as good as using actual binormal.
                 float3 binormal_os : BINORMAL_OS;
 
                 float2 uv0 : TEXCOORD0;
@@ -483,13 +483,17 @@ Shader "Lereldarion/Procedural Ruffles" {
                     spline_position_coefficients[2] // 1
                 );
                 float3 tangent_ruffle_x = normalize(mul(mul(spline_t3_t2_t_1.yzw, spline_tangent_u_coefficients), spline_cp));
-                synthesized_input.tangent_os = tangent_ruffle_x;
+                synthesized_input.tangent_os.xyz = tangent_ruffle_x;
                 
                 // Binormal = tangent_v = derivative of surface along +y. Interpolate +y derivatives along the spline.
                 synthesized_input.binormal_os = normalize(mul(spline_b, spline_dy_cp));
 
                 // Normal from cross
-                synthesized_input.normal_os = normalize(cross(synthesized_input.tangent_os, synthesized_input.binormal_os)) * sign(half_loop_range);
+                synthesized_input.normal_os = normalize(cross(synthesized_input.tangent_os.xyz, synthesized_input.binormal_os)) * sign(half_loop_range);
+                synthesized_input.tangent_os.w = sign(half_loop_range); // w factor to rebuild binormal from normal+tangent
+
+                // Test synthesized_input.binormal_os = cross(synthesized_input.normal_os, synthesized_input.tangent_os.xyz) * synthesized_input.tangent_os.w;
+
 
                 //synthesized_input.position_os = lerp(spline_cp[1], spline_cp[2], offset_within_spline_segment);
                 //synthesized_input.position_os = lerp(cp_before.half_cycle, cp_after.half_cycle, offset_01_within_half_cycle);
@@ -522,7 +526,7 @@ Shader "Lereldarion/Procedural Ruffles" {
                 stream.RestartStrip();
             }
             void draw_tbn(inout LineStream<FragmentInput> stream, VertexData input, float length) {
-                draw_vector(stream, input.position_os, input.tangent_os * length, float3(1, 0, 0));
+                draw_vector(stream, input.position_os, input.tangent_os.xyz * length, float3(1, 0, 0));
                 draw_vector(stream, input.position_os, input.binormal_os * length, float3(0, 1, 0));
                 draw_vector(stream, input.position_os, input.normal_os * length, float3(0, 0, 1));
             }

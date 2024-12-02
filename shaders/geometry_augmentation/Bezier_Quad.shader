@@ -86,8 +86,13 @@ Shader "Lereldarion/Bezier_Quad" {
                 float3 normal_os : NORMAL_OS;
                 float3 tangent_os : TANGENT_OS;
                 float3 binormal_os : BINORMAL_OS;
+                
                 float2 uv0 : TEXCOORD0;
+
                 float3 binormal_linear_interpolation : BINORMAL_LINEAR_INTERPOLATION;
+                
+                float4 debug : DEBUG;
+                
                 UNITY_VERTEX_INPUT_INSTANCE_ID // Setup has been called
             };
 
@@ -112,6 +117,7 @@ Shader "Lereldarion/Bezier_Quad" {
                 float normal_scale : VERTEX_SCALE;
                 
                 float2 uv0 : TEXCOORD0;
+
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -121,6 +127,8 @@ Shader "Lereldarion/Bezier_Quad" {
                 // Bezier displacement vectors from this vertex
                 float3 d_edge_u : D_EDGE_U;
                 float3 d_edge_v : D_EDGE_V;
+
+                float4 debug : DEBUG;
             };
 
             struct TessellationFactors {
@@ -189,6 +197,8 @@ Shader "Lereldarion/Bezier_Quad" {
                 id = (id + rotation) % 4;
                 
                 TessellationControlPoint output;
+
+                output.debug = uint4(0, 1, 2, 3) == rotation ? 1. : 0.;
                 
                 const TessellationVertexData input = inputs[id];
                 UNITY_SETUP_INSTANCE_ID (input);
@@ -199,7 +209,8 @@ Shader "Lereldarion/Bezier_Quad" {
                 TessellationVertexData input_v = inputs[id ^ (swaps_axis ? 1 : 3)];
 
                 output.d_edge_u = length(input_u.position_os - input.position_os) * sign(input_u.uv0.x - input.uv0.x) * input.tangent_os;
-                output.d_edge_v = length(input_v.position_os - input.position_os) * sign(input_v.uv0.y - input.uv0.y) * input.binormal_os * unity_WorldTransformParams.w;
+                output.d_edge_v = length(input_v.position_os - input.position_os) * sign(input_v.uv0.y - input.uv0.y) /* (swaps_axis ? unity_WorldTransformParams.w : 1.)*/ * input.binormal_os;
+                // FIXME cannot find a way to fix d_edge orientation for all combinations of mesh + xyz swap. Odd negative scaling unsupported !
                 return output;
             }
 
@@ -210,7 +221,7 @@ Shader "Lereldarion/Bezier_Quad" {
 
             struct InterpolatedVertexData {
                 float3 position;
-                float3 tangent;
+                float4 tangent;
                 float3 binormal;
                 float3 normal;
                 float2 uv0;
@@ -276,9 +287,10 @@ Shader "Lereldarion/Bezier_Quad" {
                     }
 
                     // Finalize TBN
-                    output.tangent = normalize(tangent_dir);
+                    output.tangent.xyz = normalize(tangent_dir);
                     output.binormal = normalize(binormal_dir);
-                    output.normal = normalize(cross(output.tangent, output.binormal)) * uv0_signs.x;
+                    output.normal = normalize(cross(output.tangent.xyz, output.binormal)) * uv0_signs.x;
+                    output.tangent.w = uv0_signs.x; // w factor to rebuild binormal from normal+tangent
 
                     output.binormal_linear_interpolation = normalize(mul(linear_factors, float4x3(cp[0].vertex.binormal_os, cp[1].vertex.binormal_os, cp[2].vertex.binormal_os, cp[3].vertex.binormal_os)));
 
@@ -297,10 +309,12 @@ Shader "Lereldarion/Bezier_Quad" {
 
                 output.position_os = pn.position;
                 output.normal_os = pn.normal;
-                output.tangent_os = pn.tangent;
+                output.tangent_os = pn.tangent.xyz;
+                //output.binormal_os = cross(pn.normal, pn.tangent.xyz) * pn.tangent.w; // Test integration in unity
                 output.binormal_os = pn.binormal;
                 output.binormal_linear_interpolation = pn.binormal_linear_interpolation;
                 output.uv0 = pn.uv0;
+                output.debug = cp[0].debug;
             }
 
             /////// TBN debug
@@ -360,17 +374,18 @@ Shader "Lereldarion/Bezier_Quad" {
                 FragmentInput output;
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
                 output.color = float3(1, 1, 1);
+                output.color = 1 - input[0].debug.xyz;
 
                 output.position = UnityObjectToClipPos(input[0].position_os);
-                output.color = float3(input[0].uv0, 0);
+                //output.color = float3(input[0].uv0, 0);
                 stream.Append(output);
 
                 output.position = UnityObjectToClipPos(input[1].position_os);
-                output.color = float3(input[1].uv0, 0);
+                //output.color = float3(input[1].uv0, 0);
                 stream.Append(output);
 
                 output.position = UnityObjectToClipPos(input[2].position_os);
-                output.color = float3(input[2].uv0, 0);
+                //output.color = float3(input[2].uv0, 0);
                 stream.Append(output);
             }
             #endif
