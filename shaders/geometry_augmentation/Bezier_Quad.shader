@@ -128,6 +128,8 @@ Shader "Lereldarion/Bezier_Quad" {
                 float3 d_edge_u : D_EDGE_U;
                 float3 d_edge_v : D_EDGE_V;
 
+                float odd_negative : ODD_NEGATIVE;
+
                 float4 debug : DEBUG;
             };
 
@@ -204,13 +206,18 @@ Shader "Lereldarion/Bezier_Quad" {
                 UNITY_SETUP_INSTANCE_ID (input);
                 output.vertex = input;
                 
-                bool swaps_axis = rotation & 1 == 1;
+                bool swaps_axis = (rotation & 1) == 1;
                 TessellationVertexData input_u = inputs[id ^ (swaps_axis ? 3 : 1)];
                 TessellationVertexData input_v = inputs[id ^ (swaps_axis ? 1 : 3)];
 
+                // Odd negative factor : set empirically from example meshes.
+                // rotation 0 (sablier) : use 1.
+                // rotation 1 is untested, assume same as sablier.
+                // rotation 2 (skirt) & 3 (quad2x2 / strip) : use unity_WorldTransformParams.w
+                output.odd_negative = (rotation & 2) == 2 ? unity_WorldTransformParams.w : 1.;
+
                 output.d_edge_u = length(input_u.position_os - input.position_os) * sign(input_u.uv0.x - input.uv0.x) * input.tangent_os;
-                output.d_edge_v = length(input_v.position_os - input.position_os) * sign(input_v.uv0.y - input.uv0.y) /* (swaps_axis ? unity_WorldTransformParams.w : 1.)*/ * input.binormal_os;
-                // FIXME cannot find a way to fix d_edge orientation for all combinations of mesh + xyz swap. Odd negative scaling unsupported !
+                output.d_edge_v = length(input_v.position_os - input.position_os) * sign(input_v.uv0.y - input.uv0.y) * output.odd_negative * input.binormal_os;
                 return output;
             }
 
@@ -271,7 +278,7 @@ Shader "Lereldarion/Bezier_Quad" {
                         mul(float4(muv_uv.x * dedge_factors.y, -edge_factors.x, muv_uv.z * dedge_factors.y, edge_factors.x), edges)
                     );
                     float3 tangent_dir = dposition_dx * uv0_signs.x;
-                    float3 binormal_dir = dposition_dy * uv0_signs.y * unity_WorldTransformParams.w;
+                    float3 binormal_dir = dposition_dy * uv0_signs.y * cp[0].odd_negative;
 
                     // On the edges, the tangent/binormal in line with the edge is ok. But the other is not, so use a linear interpolation.
                     float2 distance_to_edges = 0.5 - abs(patch_uv - 0.5);
@@ -373,19 +380,20 @@ Shader "Lereldarion/Bezier_Quad" {
                 UNITY_SETUP_INSTANCE_ID(input[0]);
                 FragmentInput output;
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
+
                 output.color = float3(1, 1, 1);
-                output.color = 1 - input[0].debug.xyz;
+                output.color = input[0].debug.xyz + input[0].debug.w;
 
                 output.position = UnityObjectToClipPos(input[0].position_os);
-                //output.color = float3(input[0].uv0, 0);
+                output.color = float3(input[0].uv0, 0);
                 stream.Append(output);
 
                 output.position = UnityObjectToClipPos(input[1].position_os);
-                //output.color = float3(input[1].uv0, 0);
+                output.color = float3(input[1].uv0, 0);
                 stream.Append(output);
 
                 output.position = UnityObjectToClipPos(input[2].position_os);
-                //output.color = float3(input[2].uv0, 0);
+                output.color = float3(input[2].uv0, 0);
                 stream.Append(output);
             }
             #endif
