@@ -88,8 +88,9 @@ Shading/Lighting
 - Normal work http://www.aversionofreality.com/blog/2022/4/21/custom-normals-workflow
 - Parallax mapping for faking geometry : https://learnopengl.com/Advanced-Lighting/Parallax-Mapping https://mrrolord.gumroad.com/l/BlenderPOM 
 
-Depth (in unity)
+Depth
 - https://www.cyanilux.com/tutorials/depth/
+- https://developer.nvidia.com/content/depth-precision-visualized : why reversed Z, and distribution of precision
 
 Raymarching
 - Sphere impostor https://bgolus.medium.com/rendering-a-sphere-on-a-quad-13c92025570c
