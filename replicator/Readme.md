@@ -91,3 +91,12 @@ A geometry pass is used to generate either boxes at close range, or a simple qua
 
 The snowflake lighting model is improvised by adding transmission after having read some articles about PBR models, and looking at the lighting code from orels PBR shaders.
 It looks ok but is very dependent on a good map lighting setup.
+
+## Visor overlays
+
+A rectangle visor can be deployed by grabbing it from its torso rest position with the left hand.
+Various overlay shaders can be applied to the quad surface inside ; they are selected by sliding the right index on the bottom edge of the visor.
+The set of overlay shader contains typical world exploration tools like displaying normals, wireframe, transform + rangefinder HUD, audiolink debug, ...
+
+The shaders are stored in their [own repository](https://github.com/lereldarion/unity-shaders) with VCC packaging.
+This is convenient because I use them accross multiple avatar unity projects.
