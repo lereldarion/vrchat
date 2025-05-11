@@ -1,14 +1,26 @@
-# Sources for my replicator avatar
-Some basic explanations, but this is incomplete (no mesh, texture, unity object tree).
+# Replicator avatar
 
 Showcase video : https://www.youtube.com/watch?v=QGTpdXJ7kgY
 
+Avatar links (public) :
+- Full version, good rank : https://vrchat.com/home/avatar/avtr_25727835-517d-44b4-b743-b12a83241f21
+- Excellent rank version, with pets and cut animation disabled : https://vrchat.com/home/avatar/avtr_a83e22eb-e7b4-44b2-bfb6-32516e53b55c
+
+Avatar pedestals can be found on my experiment world : https://vrchat.com/home/world/wrld_8e55d0eb-5549-4744-b36a-afbafa18fcc3 
+
+This git folder contains source files for interesting parts of the avatar : shaders, scripts to generate shader input data, scripts to generate animators.
+Blender project, mesh, textures and unity object tree are not included.
+
+TODO organize explanations
+
 ## Geometry compression using geometry pass
 Each triangle in the base mesh is dynamically expanded to a replicator block by the shader.
-- `generate_shader_code.py` : Generate the HLSL tables of vertex data constants, from blender meshes (the anchor triangle, and blocks for LOD0 and LOD1).
+- `generate_shader_code.py` : Generate the HLSL tables of vertex data constants, from blender meshes (the anchor triangle, and blocks for LOD0 LOD1 LOD2).
 - `baked_geometry_data.hlsl` : Vertex data that is generated.
 - `baked_random_values.hlsl` : set of random values to sample from.
 - `prototype.shader` : Simple version of the geometry pass expansion code, with debug shading. Uses the vertex data.
+
+![](./replicator_block_lods.jpg)
 
 ## Orels integration
 - `template.orltemplate` : Modified PBR template to add a geometry pass and some hooks for the replicator case
