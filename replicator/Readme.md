@@ -1,6 +1,8 @@
 # Sources for my replicator avatar
 Some basic explanations, but this is incomplete (no mesh, texture, unity object tree).
 
+Showcase video : https://www.youtube.com/watch?v=QGTpdXJ7kgY
+
 ## Geometry compression using geometry pass
 Each triangle in the base mesh is dynamically expanded to a replicator block by the shader.
 - `generate_shader_code.py` : Generate the HLSL tables of vertex data constants, from blender meshes (the anchor triangle, and blocks for LOD0 and LOD1).
