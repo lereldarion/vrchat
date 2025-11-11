@@ -3,13 +3,15 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
     Properties {
         _LavaSim_LavaDensity("Lava particle density (kg/m3, rock+gas bubbles)", Float) = 950
 
-        _LavaSim_Logistic_Distribution_Bounds("Avoid large samples from logistic dsitributions", Range(0, 1)) = 0.95
+        _LavaSim_Logistic_Distribution_Bounds("Avoid large samples from logistic distributions", Range(0, 1)) = 0.95
         
         [Header(Spawn)]
-        _LavaSim_Initial_Position("Position", Vector) = (0, 0, 0, 0)
-        _LavaSim_Initial_Velocity("Velocity", Vector) = (0, 50, 0, 0)
-        _LavaSim_Initial_Velocity_Spread("Velocity spread", Vector) = (1, 1, 1, 0)
-        _LavaSim_Initial_Size("Size", Float) = 0.5
+        _LavaSim_Initial_Position("Position", Vector) = (0, 1, 0, 0)
+        _LavaSim_Initial_EllipseX("Ellipse X", Vector) = (3, 0, 0, 0)
+        _LavaSim_Initial_EllipseY("Ellipse Y", Vector) = (0, 0, 3, 0)
+        _LavaSim_Initial_Velocity("Velocity", Vector) = (0, 100, 0, 0)
+        _LavaSim_Initial_Velocity_Spread("Velocity spread", Vector) = (0.1, 5, 0.1, 0)
+        _LavaSim_Initial_Size("Size (radius)", Float) = 0.25
         _LavaSim_Initial_Size_Spread("Size spread", Float) = 0.1
         _LavaSim_Initial_Temperature("Temperature", Float) = 1490
 
@@ -17,7 +19,7 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
         _LavaSim_Conductivity("Conductivity", Float) = 1
 
         [Header(Wind)]
-        _LavaSim_Wind("Wind", Vector) = (0, 0, 0, 0)
+        _LavaSim_Wind("Wind", Vector) = (0, 0, 8, 0)
         _LavaSim_DragCoefficient("Drag coefficient", Range(0, 2)) = 1
     }
     SubShader {
@@ -181,7 +183,8 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
             uniform float _LavaSim_LavaDensity;
 
             uniform float3 _LavaSim_Initial_Position;
-            uniform float3 _LavaSim_Initial_Position_Spread;
+            uniform float3 _LavaSim_Initial_EllipseX;
+            uniform float3 _LavaSim_Initial_EllipseY;
             uniform float3 _LavaSim_Initial_Velocity;
             uniform float3 _LavaSim_Initial_Velocity_Spread;
             uniform float _LavaSim_Initial_Size;
@@ -205,11 +208,9 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
             float4 fragment_stage(v2f_customrendertexture input) : SV_Target {
                 State state = State::load(input.vertex);
                 const float dt = unity_DeltaTime.x;
-                const float time = _Time.y;
-                const float rcp_dt = unity_DeltaTime.y;
 
                 bool reset = false;
-                if(state.position.y <= -1) {
+                if(state.position.y <= 0) {
                     // TODO proper, compare pos with heightmap for example
                     reset = true;
                 }
@@ -218,7 +219,7 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                     // Step. For now basic euler.
 
                     // Assume spherical particle of radius = size
-                    const float area = 3.14159265359 * state.size * state.size;
+                    const float area = UNITY_PI * state.size * state.size;
                     const float surface = 4 * area;
                     const float volume = 4. / 3. * area * state.size;
                     const float mass = volume * _LavaSim_LavaDensity;
@@ -228,18 +229,27 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                     const float air_density = 1.16; // kg/m3, at 30°C
                     const float3 drag = (0.5 * air_density * _LavaSim_DragCoefficient * area * length(wind_relative_velocity)) * wind_relative_velocity;
                     
-                    // TODO add small random component to velocity over time ?
-
                     // Temperature exchange with air
-                    state.temperature += dt * length(state.velocity) * (30 - state.temperature) * _LavaSim_Conductivity * area / mass;
+                    //state.temperature += dt * length(state.velocity) * (30 - state.temperature) * _LavaSim_Conductivity * area / mass;
+                    // FIXME fix black body first
 
                     state.position += dt * state.velocity;
                     state.velocity += dt * (float3(0, -9.81, 0) + drag / mass);
                 } else {
-                    // Reset
-                    state.position = _LavaSim_Initial_Position; // Logistic sampling does not work well. Maybe uniform on disk, or fixed association from particle_id if square
-                    state.velocity = _LavaSim_Initial_Velocity + _LavaSim_Initial_Velocity_Spread * logistic_sample_from_uniform(hash33(float3(state.particle_id, time)));
-                    state.size = _LavaSim_Initial_Size + _LavaSim_Initial_Size_Spread * lerp(-1, 1, hash31(float3(state.particle_id, time + 0.1)));
+                    // Reset. Random sampling for new values.
+                    float4 uniform_01 = hash44(float4(state.position, state.temperature) + float4(state.velocity, state.size) + state.particle_id.xyxy);
+
+                    // Spawn from ellipse surface
+                    float2 circle_pos;
+                    sincos(2 * UNITY_PI * uniform_01.y, circle_pos.y, circle_pos.x);
+                    circle_pos *= sqrt(uniform_01.x);
+                    state.position = _LavaSim_Initial_Position + circle_pos.x * _LavaSim_Initial_EllipseX + circle_pos.y * _LavaSim_Initial_EllipseY;
+
+                    state.velocity = _LavaSim_Initial_Velocity + _LavaSim_Initial_Velocity_Spread * logistic_sample_from_uniform(uniform_01.yzw);
+
+                    state.size = _LavaSim_Initial_Size + _LavaSim_Initial_Size_Spread * lerp(-1, 1, uniform_01.x);
+                    // From fountain picture : many between 0.5 to 0.7 diam, below .25 use smoke, not many above 1.5 m
+
                     state.temperature = _LavaSim_Initial_Temperature;
                 }
                 return state.store();

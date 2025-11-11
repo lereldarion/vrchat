@@ -23,6 +23,8 @@ public class LavaDebugMesh : MonoBehaviour
     [MenuItem("Tools/LavaSim/GenerateBlackBodyTexture")]
     static void CreateBlackBodyTexture()
     {
+        // FIXME not RGB values... goes from 0 to 11 between 203 and 204 deg celsius. Lol.
+
         // covers up to ~500 K which should have no blackbody effect
         const int temperature_range = 1024;
         const int max_temperature = 1500;
