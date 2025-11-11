@@ -13,6 +13,9 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
         _LavaSim_Initial_Size_Spread("Size spread", Float) = 0.1
         _LavaSim_Initial_Temperature("Temperature", Float) = 1490
 
+        [Header(Temperature)]
+        _LavaSim_Conductivity("Conductivity", Float) = 1
+
         [Header(Wind)]
         _LavaSim_Wind("Wind", Vector) = (0, 0, 0, 0)
         _LavaSim_DragCoefficient("Drag coefficient", Range(0, 2)) = 1
@@ -185,6 +188,8 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
             uniform float _LavaSim_Initial_Size_Spread;
             uniform float _LavaSim_Initial_Temperature;
 
+            uniform float _LavaSim_Conductivity;
+
             uniform float3 _LavaSim_Wind;
             uniform float _LavaSim_DragCoefficient;
 
@@ -226,7 +231,7 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                     // TODO add small random component to velocity over time ?
 
                     // Temperature exchange with air
-                    // TODO
+                    state.temperature += dt * length(state.velocity) * (30 - state.temperature) * _LavaSim_Conductivity * area / mass;
 
                     state.position += dt * state.velocity;
                     state.velocity += dt * (float3(0, -9.81, 0) + drag / mass);

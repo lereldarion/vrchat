@@ -23,6 +23,10 @@ Material:
   m_SavedProperties:
     serializedVersion: 3
     m_TexEnvs:
+    - _LavaSim_Black_Body:
+        m_Texture: {fileID: 2800000, guid: a4c4fc7825fea3b4a89215436e56be83, type: 2}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     - _LavaSim_State:
         m_Texture: {fileID: 8600000, guid: 916355a91938797469330d0343a06a39, type: 2}
         m_Scale: {x: 1, y: 1}

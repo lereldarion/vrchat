@@ -2,6 +2,7 @@
     Properties {
         //[ToggleUI] _DJ_Enable("Enable output pixels", Float) = 1
         [NoScaleOffset] _LavaSim_State("State texture", 2D) = "" {}
+        [NoScaleOffset] _LavaSim_Black_Body("Black body texture", 2D) = "" {}
     }
     SubShader {
         Tags {
@@ -49,6 +50,9 @@
 
             uniform Texture2D<float4> _LavaSim_State;
 
+            uniform Texture2D<float4> _LavaSim_Black_Body;
+            uniform SamplerState sampler_LavaSim_Black_Body;
+
             struct State {
                 float3 position;
                 float temperature; // Kelvin, at surface of particle
@@ -89,45 +93,41 @@
                 return float3x3(x, y, z);
             }
 
-            float3 black_body_radiation(float Temperature) {
-                float3 color = float3(255.0, 255.0, 255.0);
-                color.x = 56100000. * pow(Temperature,(-3.0 / 2.0)) + 148.0;
-                color.y = 100.04 * log(Temperature) - 623.6;
-                //if (Temperature > 6500.0) color.y = 35200000.0 * pow(Temperature,(-3.0 / 2.0)) + 184.0;
-                color.z = 194.18 * log(Temperature) - 1448.6;
-                color = clamp(color, 0.0, 255.0)/255.0;
-                if (Temperature < 1000.0) color *= Temperature/1000.0;
-                return color;
-            }
-
             [instance(32)]
-            [maxvertexcount(3)]
+            [maxvertexcount(3 * 4)]
             void geometry_stage(point GeometryVertexData input[1], inout TriangleStream<FragmentInput> stream, const uint primitive_id : SV_PrimitiveID, const uint instance : SV_GSInstanceID) {
                 UNITY_SETUP_INSTANCE_ID(input[0]);
 
-                uint2 particle_id = uint2(instance, primitive_id); // Cover a square when we increase particle count
-                State state = State::load(particle_id);
-
-                float3x3 billboard = referential_from_z(centered_camera_ws - state.position);
-
-                FragmentInput output;
-                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
-
-                // Black body radiation
-                output.color = black_body_radiation(state.temperature);
-
-                float2 corners[3] = { float2(1, 0), float2(-0.5, -sqrt(3) / 2), float2(-0.5, sqrt(3) / 2) };
-                [unroll] for(uint i = 0; i < 3; i += 1) {
-                    output.uv = corners[i];
-                    output.position_cs = UnityWorldToClipPos(state.position + 2 * state.size * mul(float3(output.uv, 0), billboard));
-                    stream.Append(output); 
+                [unroll] for(uint j = 0; j < 4; j += 1) {
+                    uint2 particle_id = uint2(instance + j * 32, primitive_id); // Cover a square when we increase particle count
+                    State state = State::load(particle_id);
+    
+                    float3x3 billboard = referential_from_z(centered_camera_ws - state.position);
+    
+                    FragmentInput output;
+                    UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
+    
+                    // Black body radiation
+                    const float max_temperature = 1500;
+                    const float min_temperature = max_temperature - 1024;
+                    const float temperature_x = state.temperature - min_temperature;
+                    output.color = _LavaSim_Black_Body.SampleLevel(sampler_LavaSim_Black_Body, float2(temperature_x, 0), 0 /*mip*/).rgb;
+    
+                    float2 corners[3] = { float2(1, 0), float2(-0.5, -sqrt(3) / 2), float2(-0.5, sqrt(3) / 2) };
+                    [unroll] for(uint i = 0; i < 3; i += 1) {
+                        output.uv = corners[i];
+                        output.position_cs = UnityWorldToClipPos(state.position + 2 * state.size * mul(float3(output.uv, 0), billboard));
+                        stream.Append(output); 
+                    }
+                    stream.RestartStrip();
                 }
             }
 
             fixed4 fragment_stage(FragmentInput input) : SV_Target {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
-                if (length_sq(input.uv) > 0.25) { discard; }
-                return fixed4(input.color, 1);
+                float len_sq = length_sq(input.uv);
+                if (len_sq > 0.25) { discard; }
+                return fixed4(input.color * (1 - 4 * len_sq), 1);
             }
             ENDCG            
         }
