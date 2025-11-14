@@ -1,5 +1,7 @@
 #if UNITY_EDITOR
 using System;
+using Mono.Cecil;
+using UdonSharp.Serialization;
 using Unity.Mathematics;
 using UnityEditor;
 using UnityEngine;
@@ -9,11 +11,41 @@ public class LavaSimEditorTools
     [MenuItem("Tools/LavaSim/GenerateParticleDisplayMesh")]
     static void GenerateParticleDisplayMesh()
     {
-        // TODO move to system without geometry pass
+        var particle_counts = new int2(256, 256); // Keep up to date
+        int total_particles = particle_counts.x * particle_counts.y;
+
+        Vector3[] triangle_corners = new Vector3[total_particles * 3];
+        int[] indices = new int[total_particles * 3];
+
+        Vector3 vertex_pos_with_rand_angle(float from_angle, float to_angle, float packed_particle_id) 
+        {
+            float angle = Mathf.PI / 180f * UnityEngine.Random.Range(from_angle, to_angle);
+            return new Vector3(Mathf.Cos(angle), Mathf.Sin(angle), packed_particle_id);
+        }
+
+        for(int particle_x = 0; particle_x < particle_counts.x; particle_x += 1)
+        {
+            for(int particle_y = 0; particle_y < particle_counts.y; particle_y += 1)
+            {
+                int packed_particle_id = (particle_y << 10) | particle_x; // Up to 10 bits of id, fits 23 bit mantissa.
+
+                int linear_id_offset = 3 * (particle_x * particle_counts.y + particle_y);
+
+                triangle_corners[linear_id_offset + 0] = new Vector3(1f, 0f, packed_particle_id);
+                triangle_corners[linear_id_offset + 1] = vertex_pos_with_rand_angle(95f, 175f, packed_particle_id);
+                triangle_corners[linear_id_offset + 2] = vertex_pos_with_rand_angle(185f, 265f, packed_particle_id);
+
+                indices[linear_id_offset + 0] = linear_id_offset + 0;
+                indices[linear_id_offset + 1] = linear_id_offset + 1;
+                indices[linear_id_offset + 2] = linear_id_offset + 2;
+            }
+        }
+
         Mesh mesh = new Mesh();
-        mesh.vertices = new Vector3[1];
+        mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32; // 2^16 is max of a submesh, and indices are x3 so do not fit...
+        mesh.SetVertices(triangle_corners);
+        mesh.SetIndices(indices, MeshTopology.Triangles, 0, false /*recompute bounds*/);
         mesh.bounds = new Bounds(Vector3.zero, Vector3.one * 10000f);
-        mesh.SetIndices(new int[256], MeshTopology.Points, 0, false /*recompute bounds*/);
         AssetDatabase.CreateAsset(mesh, "Assets/Scene/LavaSim/DebugMesh.asset");
     }
 
@@ -22,8 +54,6 @@ public class LavaSimEditorTools
     {
         // Range up to 1600K (~1300C) with 1024 K points.
         // Empirically this formula will give negative blue values on this range, so we can ignore them and use RG only. Blue starts to rise after this.
-
-        // covers up to ~500 K which should have no blackbody effect
         const int temperature_range = 1024;
         const int max_temperature = 1600;
         const int min_temperature = max_temperature - temperature_range;
@@ -462,18 +492,4 @@ public class LavaSimEditorTools
         822, 823, 824, 825, 826, 827, 828, 829, 830
     };
 }
-
-/*[CustomEditor(typeof(LavaDebugMesh), true)]
-public class LavaDebugMesh_Editor : Editor
-{
-    public override void OnInspectorGUI()
-    {
-        DrawDefaultInspector();
-
-        if(GUILayout.Button("Generate"))
-        {
-            //
-        }
-    }
-}*/
 #endif

@@ -34,5 +34,7 @@ Material:
     m_Ints: []
     m_Floats:
     - _LavaSim_Black_Body_Scale: 0.04
+    - _LavaSim_Particle_Scale: 3
+    - _LavaSim_Rotation_Speed_Spread: 3
     m_Colors: []
   m_BuildTextureStacks: []
