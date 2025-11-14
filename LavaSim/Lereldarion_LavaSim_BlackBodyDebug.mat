@@ -29,6 +29,7 @@ Material:
         m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
-    - _LavaSim_Temperature: 476.7
+    - _LavaSim_Black_Body_Scale: 0.04
+    - _LavaSim_Temperature: 1473
     m_Colors: []
   m_BuildTextureStacks: []

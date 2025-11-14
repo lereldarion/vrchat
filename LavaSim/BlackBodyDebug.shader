@@ -1,7 +1,8 @@
 ﻿Shader "Lereldarion/LavaSim/BlackBodyDebug" {
     Properties {
-        _LavaSim_Temperature("Temperature Celsius", Range(0, 1500)) = 1000
+        _LavaSim_Temperature("Temperature Celsius", Range(0, 1600)) = 1473
         [NoScaleOffset] _LavaSim_Black_Body("Black body texture", 2D) = "" {}
+        _LavaSim_Black_Body_Scale("Black body emission scaling", Range(0, 1)) = 1
     }
     SubShader {
         Tags {
@@ -32,14 +33,15 @@
 
             struct FragmentInput {
                 float4 position_cs : SV_POSITION;
-                nointerpolation fixed3 color : BLACK_BODY;
+                fixed3 color : BLACK_BODY;
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
             uniform float _LavaSim_Temperature;
-
+            
             uniform Texture2D<float4> _LavaSim_Black_Body;
             uniform SamplerState sampler_LavaSim_Black_Body;
+            uniform float _LavaSim_Black_Body_Scale;
 
 
             void vertex_stage(VertexData input, out FragmentInput output) {
@@ -47,10 +49,11 @@
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
 
                 // Black body radiation.
-                const float max_temperature = 1500;
-                const float min_temperature = max_temperature - 1024;
-                const float temperature_x = (_LavaSim_Temperature /*+ 273.15*/) - min_temperature;
-                output.color = _LavaSim_Black_Body.SampleLevel(sampler_LavaSim_Black_Body, float2(temperature_x, 0), 0 /*mip*/).rgb;
+                const float temperature_range = 1024;
+                const float max_temperature = 1600;
+                const float min_temperature = max_temperature - temperature_range;
+                const float temperature_x = ((_LavaSim_Temperature /*+ 273.15*/) - min_temperature) / temperature_range;
+                output.color = _LavaSim_Black_Body.SampleLevel(sampler_LavaSim_Black_Body, float2(temperature_x, 0), 0 /*mip*/).rgb * _LavaSim_Black_Body_Scale;
 
                 output.position_cs = UnityObjectToClipPos(input.position);
             }

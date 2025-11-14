@@ -4,11 +4,8 @@ using Unity.Mathematics;
 using UnityEditor;
 using UnityEngine;
 
-public class LavaDebugMesh : MonoBehaviour
+public class LavaSimEditorTools
 {
-    public int PointCount;
-    public float BoundingBoxRadius = 100;
-
     [MenuItem("Tools/LavaSim/GenerateParticleDisplayMesh")]
     static void GenerateParticleDisplayMesh()
     {
@@ -23,15 +20,16 @@ public class LavaDebugMesh : MonoBehaviour
     [MenuItem("Tools/LavaSim/GenerateBlackBodyTexture")]
     static void CreateBlackBodyTexture()
     {
-        // FIXME not RGB values... goes from 0 to 11 between 203 and 204 deg celsius. Lol.
+        // Range up to 1600K (~1300C) with 1024 K points.
+        // Empirically this formula will give negative blue values on this range, so we can ignore them and use RG only. Blue starts to rise after this.
 
         // covers up to ~500 K which should have no blackbody effect
         const int temperature_range = 1024;
-        const int max_temperature = 1500;
+        const int max_temperature = 1600;
         const int min_temperature = max_temperature - temperature_range;
 
-        // Compute RGB blackbody emission for each temnperature 
-        float[] colors_rgba = new float[temperature_range * 4];
+        // Compute RGB blackbody emission for each temperature 
+        float[] colors_rg = new float[temperature_range * 2];
         for (int i_t = 0; i_t < temperature_range; i_t += 1)
         {
             const int nCIESamples = 471;
@@ -48,16 +46,14 @@ public class LavaDebugMesh : MonoBehaviour
             }
 
             double3 rgb = XYZToRGB(integral_xyz);
-            colors_rgba[i_t * 4 + 0] = (float)rgb.x;
-            colors_rgba[i_t * 4 + 1] = (float)rgb.y;
-            colors_rgba[i_t * 4 + 2] = (float)rgb.z;
-            colors_rgba[i_t * 4 + 3] = 0;
+            colors_rg[i_t * 2 + 0] = (float)rgb.x;
+            colors_rg[i_t * 2 + 1] = (float)rgb.y;
         }
 
         // Texture pack
-        var texture = new Texture2D(temperature_range, 1, TextureFormat.RGBAFloat, false /*mip*/, false /*linear*/);
-        texture.SetPixelData(colors_rgba, 0);
+        var texture = new Texture2D(temperature_range, 1, TextureFormat.RGFloat, false /*mip*/, true /*linear*/);
         texture.wrapMode = TextureWrapMode.Clamp;
+        texture.SetPixelData(colors_rg, 0);
         AssetDatabase.CreateAsset(texture, "Assets/Scene/LavaSim/black_body_table.asset");
     }
     

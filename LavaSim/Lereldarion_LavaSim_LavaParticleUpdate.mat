@@ -25,11 +25,11 @@ Material:
     m_TexEnvs: []
     m_Ints: []
     m_Floats:
-    - _LavaSim_Conductivity: 1
+    - _LavaSim_Conductivity: 0.0001
     - _LavaSim_DragCoefficient: 1
     - _LavaSim_Initial_Size: 0.25
-    - _LavaSim_Initial_Size_Spread: 0.1
-    - _LavaSim_Initial_Temperature: 1490
+    - _LavaSim_Initial_Size_Spread: 0.15
+    - _LavaSim_Initial_Temperature: 1473
     - _LavaSim_LavaDensity: 950
     - _LavaSim_Logistic_Distribution_Bounds: 0.95
     m_Colors:

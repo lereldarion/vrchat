@@ -13,7 +13,7 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
         _LavaSim_Initial_Velocity_Spread("Velocity spread", Vector) = (0.1, 5, 0.1, 0)
         _LavaSim_Initial_Size("Size (radius)", Float) = 0.25
         _LavaSim_Initial_Size_Spread("Size spread", Float) = 0.1
-        _LavaSim_Initial_Temperature("Temperature", Float) = 1490
+        _LavaSim_Initial_Temperature("Temperature", Float) = 1473
 
         [Header(Temperature)]
         _LavaSim_Conductivity("Conductivity", Float) = 1
@@ -230,7 +230,7 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                     const float3 drag = (0.5 * air_density * _LavaSim_DragCoefficient * area * length(wind_relative_velocity)) * wind_relative_velocity;
                     
                     // Temperature exchange with air
-                    //state.temperature += dt * length(state.velocity) * (30 - state.temperature) * _LavaSim_Conductivity * area / mass;
+                    state.temperature += dt * length(state.velocity) * ((273.15 + 30) - state.temperature) * _LavaSim_Conductivity * rcp(state.size);
                     // FIXME fix black body first
 
                     state.position += dt * state.velocity;
