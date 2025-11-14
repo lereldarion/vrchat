@@ -3,17 +3,18 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
     Properties {
         _LavaSim_LavaDensity("Lava particle density (kg/m3, rock+gas bubbles)", Float) = 950
 
-        _LavaSim_Logistic_Distribution_Bounds("Avoid large samples from logistic distributions", Range(0, 1)) = 0.95
+        //_LavaSim_Logistic_Distribution_Bounds("Avoid large samples from logistic distributions", Range(0, 1)) = 0.95
         
         [Header(Spawn)]
         _LavaSim_Initial_Position("Position", Vector) = (0, 1, 0, 0)
         _LavaSim_Initial_EllipseX("Ellipse X", Vector) = (3, 0, 0, 0)
         _LavaSim_Initial_EllipseY("Ellipse Y", Vector) = (0, 0, 3, 0)
         _LavaSim_Initial_Velocity("Velocity", Vector) = (0, 100, 0, 0)
-        _LavaSim_Initial_Velocity_Spread("Velocity spread", Vector) = (0.1, 5, 0.1, 0)
+        _LavaSim_Initial_Velocity_Spread("Velocity spread (logistic)", Vector) = (0.1, 5, 0.1, 0)
         _LavaSim_Initial_Size("Size (radius)", Float) = 0.25
-        _LavaSim_Initial_Size_Spread("Size spread", Float) = 0.1
+        _LavaSim_Initial_Size_Spread("Size spread (linear)", Float) = 0.1
         _LavaSim_Initial_Temperature("Temperature", Float) = 1473
+        _LavaSim_Initial_Temperature_Spread("Temperature spread (linear)", Float) = 20
 
         [Header(Temperature)]
         _LavaSim_Conductivity("Conductivity", Float) = 1
@@ -151,6 +152,8 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                 uint2 particle_id;
                 uint quad_id_x; // using X dimension only
 
+                float4 pixels[2];
+
                 // Stored
                 float3 position;
                 float temperature; // Kelvin, at surface of particle
@@ -167,13 +170,13 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                     const float4 pixel_0 = _SelfTexture2D[screen_pixel_id];
                     const float4 pixel_x = QuadReadAcrossX(pixel_0, state.quad_id_x);
 
-                    const float4 pixel_a = state.quad_id_x == 0 ? pixel_0 : pixel_x;
-                    const float4 pixel_b = state.quad_id_x == 0 ? pixel_x : pixel_0;
+                    state.pixels[0] = state.quad_id_x == 0 ? pixel_0 : pixel_x;
+                    state.pixels[1] = state.quad_id_x == 0 ? pixel_x : pixel_0;
 
-                    state.position = pixel_a.rgb;
-                    state.temperature = pixel_a.a;
-                    state.velocity = pixel_b.rgb;
-                    state.size = pixel_b.a;
+                    state.position = state.pixels[0].rgb;
+                    state.temperature = state.pixels[0].a;
+                    state.velocity = state.pixels[1].rgb;
+                    state.size = state.pixels[1].a;
                     return state;
                 }
                 float4 store() { return quad_id_x == 0 ? float4(position, temperature) : float4(velocity, size); }
@@ -190,18 +193,15 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
             uniform float _LavaSim_Initial_Size;
             uniform float _LavaSim_Initial_Size_Spread;
             uniform float _LavaSim_Initial_Temperature;
+            uniform float _LavaSim_Initial_Temperature_Spread;
 
             uniform float _LavaSim_Conductivity;
 
             uniform float3 _LavaSim_Wind;
             uniform float _LavaSim_DragCoefficient;
 
-            float logistic_sample_from_uniform(float p) {
-                p = lerp(0.5, p, _LavaSim_Logistic_Distribution_Bounds); // Allow scale down to clamp tails and large samples
-                return log(p / (1.0 - p));
-            }
             float3 logistic_sample_from_uniform(float3 p) {
-                p = lerp(0.5, p, _LavaSim_Logistic_Distribution_Bounds); // Allow scale down to clamp tails and large samples
+                //p = lerp(0.5, p, _LavaSim_Logistic_Distribution_Bounds); // Allow scale down to clamp tails and large samples
                 return log(p / (1.0 - p));
             }
 
@@ -237,20 +237,23 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                     state.velocity += dt * (float3(0, -9.81, 0) + drag / mass);
                 } else {
                     // Reset. Random sampling for new values.
-                    float4 uniform_01 = hash44(float4(state.position, state.temperature) + float4(state.velocity, state.size) + state.particle_id.xyxy);
+                    float4 uniforms_01[2] = {
+                        hash44(state.pixels[0] + 2 * state.pixels[1] + state.particle_id.xyxy),
+                        hash44(2 * state.pixels[0] + state.pixels[1] + state.particle_id.yxyx)
+                    };
 
                     // Spawn from ellipse surface
                     float2 circle_pos;
-                    sincos(2 * UNITY_PI * uniform_01.y, circle_pos.y, circle_pos.x);
-                    circle_pos *= sqrt(uniform_01.x);
+                    sincos(2 * UNITY_PI * uniforms_01[0].x, circle_pos.y, circle_pos.x);
+                    circle_pos *= sqrt(uniforms_01[0].y);
                     state.position = _LavaSim_Initial_Position + circle_pos.x * _LavaSim_Initial_EllipseX + circle_pos.y * _LavaSim_Initial_EllipseY;
 
-                    state.velocity = _LavaSim_Initial_Velocity + _LavaSim_Initial_Velocity_Spread * logistic_sample_from_uniform(uniform_01.yzw);
+                    state.velocity = _LavaSim_Initial_Velocity + _LavaSim_Initial_Velocity_Spread * logistic_sample_from_uniform(uniforms_01[1].xyz);
 
-                    state.size = _LavaSim_Initial_Size + _LavaSim_Initial_Size_Spread * lerp(-1, 1, uniform_01.x);
+                    state.size = _LavaSim_Initial_Size + _LavaSim_Initial_Size_Spread * lerp(-1, 1, uniforms_01[1].w);
                     // From fountain picture : many between 0.5 to 0.7 diam, below .25 use smoke, not many above 1.5 m
 
-                    state.temperature = _LavaSim_Initial_Temperature;
+                    state.temperature = _LavaSim_Initial_Temperature + _LavaSim_Initial_Temperature_Spread * lerp(-1, 1, uniforms_01[0].z);
                 }
                 return state.store();
             }

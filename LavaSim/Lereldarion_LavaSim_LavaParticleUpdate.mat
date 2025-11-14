@@ -25,18 +25,19 @@ Material:
     m_TexEnvs: []
     m_Ints: []
     m_Floats:
-    - _LavaSim_Conductivity: 0.0001
+    - _LavaSim_Conductivity: 0.00009
     - _LavaSim_DragCoefficient: 1
     - _LavaSim_Initial_Size: 0.25
-    - _LavaSim_Initial_Size_Spread: 0.15
+    - _LavaSim_Initial_Size_Spread: 0.12
     - _LavaSim_Initial_Temperature: 1473
+    - _LavaSim_Initial_Temperature_Spread: 40
     - _LavaSim_LavaDensity: 950
-    - _LavaSim_Logistic_Distribution_Bounds: 0.95
+    - _LavaSim_Logistic_Distribution_Bounds: 1
     m_Colors:
     - _LavaSim_Initial_EllipseX: {r: 3, g: 0, b: 0, a: 0}
     - _LavaSim_Initial_EllipseY: {r: 0, g: 0, b: 3, a: 0}
     - _LavaSim_Initial_Position: {r: 0, g: 1, b: 0, a: 0}
-    - _LavaSim_Initial_Velocity: {r: 0, g: 90, b: -2, a: 0}
-    - _LavaSim_Initial_Velocity_Spread: {r: 0.1, g: 3, b: 0.1, a: 0}
+    - _LavaSim_Initial_Velocity: {r: -2, g: 95, b: -1, a: 0}
+    - _LavaSim_Initial_Velocity_Spread: {r: 0.2, g: 6, b: 0.2, a: 0}
     - _LavaSim_Wind: {r: -8, g: 0, b: 0, a: 0}
   m_BuildTextureStacks: []
