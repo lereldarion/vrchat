@@ -10,11 +10,15 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
         _LavaSim_Initial_EllipseX("Ellipse X", Vector) = (3, 0, 0, 0)
         _LavaSim_Initial_EllipseY("Ellipse Y", Vector) = (0, 0, 3, 0)
         _LavaSim_Initial_Velocity("Velocity", Vector) = (0, 100, 0, 0)
-        _LavaSim_Initial_Velocity_Spread("Velocity spread (logistic)", Vector) = (0.1, 5, 0.1, 0)
+        _LavaSim_Initial_Velocity_Spread("Velocity spread (logistic)", Vector) = (0.2, 4, 0.2, 0)
         _LavaSim_Initial_Size("Size (radius)", Float) = 0.25
         _LavaSim_Initial_Size_Spread("Size spread (linear)", Float) = 0.1
         _LavaSim_Initial_Temperature("Temperature", Float) = 1473
         _LavaSim_Initial_Temperature_Spread("Temperature spread (linear)", Float) = 20
+        
+        [Header(Divergence)]
+        _LavaSim_Divergence_Probability("Probability of shifting trajectory over lifetime", Range(0, 1)) = 0.7
+        _LavaSim_Divergence_Velocity_Spread("Velocity spread (logistic)", Vector) = (1, 1, 1, 0)
 
         [Header(Temperature)]
         _LavaSim_Conductivity("Conductivity", Float) = 1
@@ -158,7 +162,7 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                 float3 position;
                 float temperature; // Kelvin, at surface of particle
                 float3 velocity;
-                float size; // Could be from table indexed by particle_id
+                float size; // sign indicates if it has diverged
 
                 static State load(float4 sv_position) {
                     const uint2 screen_pixel_id = (uint2) sv_position.xy;
@@ -182,8 +186,10 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                 float4 store() { return quad_id_x == 0 ? float4(position, temperature) : float4(velocity, size); }
             };
 
-            uniform float _LavaSim_Logistic_Distribution_Bounds;
             uniform float _LavaSim_LavaDensity;
+            
+            uniform float _LavaSim_Divergence_Probability;
+            uniform float3 _LavaSim_Divergence_Velocity_Spread;
 
             uniform float3 _LavaSim_Initial_Position;
             uniform float3 _LavaSim_Initial_EllipseX;
@@ -205,6 +211,12 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                 return log(p / (1.0 - p));
             }
 
+            float poisson_process_has_event(float rate, float dt) {
+                // P(event_count = k) = (rate * t)^k exp(-rate * t) / k!
+                // P(event_count > 0) = 1 - exp(-rate * t).
+                return 1.0 - exp(-rate * dt);
+            }
+
             float4 fragment_stage(v2f_customrendertexture input) : SV_Target {
                 State state = State::load(input.vertex);
                 const float dt = unity_DeltaTime.x;
@@ -215,13 +227,19 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                     reset = true;
                 }
 
+                const float4 uniforms_01[2] = {
+                    hash44(state.pixels[0] + 2 * state.pixels[1] + state.particle_id.xyxy),
+                    hash44(2 * state.pixels[0] + state.pixels[1] + state.particle_id.yxyx)
+                };
+
                 if(!reset) {
                     // Step. For now basic euler.
 
                     // Assume spherical particle of radius = size
-                    const float area = UNITY_PI * state.size * state.size;
+                    const float size = abs(state.size);
+                    const float area = UNITY_PI * size * size;
                     const float surface = 4 * area;
-                    const float volume = 4. / 3. * area * state.size;
+                    const float volume = 4. / 3. * area * size;
                     const float mass = volume * _LavaSim_LavaDensity;
 
                     // Air / wind drag.
@@ -230,17 +248,21 @@ Shader "Lereldarion/LavaSim/LavaParticleUpdate" {
                     const float3 drag = (0.5 * air_density * _LavaSim_DragCoefficient * area * length(wind_relative_velocity)) * wind_relative_velocity;
                     
                     // Temperature exchange with air
-                    state.temperature += dt * length(state.velocity) * ((273.15 + 30) - state.temperature) * _LavaSim_Conductivity * rcp(state.size);
+                    state.temperature += dt * length(state.velocity) * ((273.15 + 30) - state.temperature) * _LavaSim_Conductivity * rcp(size);
                     // FIXME fix black body first
 
                     state.position += dt * state.velocity;
                     state.velocity += dt * (float3(0, -9.81, 0) + drag / mass);
+
+                    // Trajectory disturbance : once over lifetime.
+                    const float lifetime = 2.0 * _LavaSim_Initial_Velocity.y / 9.81; // equation of motion on y, ignoring spread and friction
+                    const float diverge_rate = -log(1.0 - _LavaSim_Divergence_Probability) / lifetime; // rate such that P(event_count > 0, lifetime) = P_diverge_over_lifetime
+                    if(state.size > 0 && uniforms_01[0].w < poisson_process_has_event(diverge_rate, dt)) {
+                        state.velocity += _LavaSim_Divergence_Velocity_Spread * logistic_sample_from_uniform(uniforms_01[0].xyz);
+                        state.size = -state.size;
+                    }
                 } else {
                     // Reset. Random sampling for new values.
-                    float4 uniforms_01[2] = {
-                        hash44(state.pixels[0] + 2 * state.pixels[1] + state.particle_id.xyxy),
-                        hash44(2 * state.pixels[0] + state.pixels[1] + state.particle_id.yxyx)
-                    };
 
                     // Spawn from ellipse surface
                     float2 circle_pos;
