@@ -29,9 +29,10 @@ Shader "Lereldarion/ExplorerCard" {
         _Blur_Mip_Bias("Blur Mip bias", Range(-16, 16)) = 2
         _Blur_Darken("Darken blurred areas", Range(0, 1)) = 0.3
 
-        [Header(Common textures)]
+        [Header(Logo)]
         [NoScaleOffset] _LogoTex("Logo", 2D) = "" {}
-
+        _Logo_Rotation_Scale_Offset("Logo rotation, scale, offset", Vector) = (30, 0.4, 0.19, -0.06)
+        _Logo_Opacity("Logo opacity", Range(0, 1)) = 0.1
     }
     SubShader {
         Tags {
@@ -70,6 +71,7 @@ Shader "Lereldarion/ExplorerCard" {
                 float3 normal_ws : NORMAL_WS;
                 float4 tangent_ws : TANGENT_WS;
                 float2 uv0 : UV0;
+                nointerpolation float2 logo_rotation_cos_sin : LOGO_ROTATION_COS_SIN;
                 UNITY_VERTEX_OUTPUT_STEREO
             };
             
@@ -94,8 +96,10 @@ Shader "Lereldarion/ExplorerCard" {
             uniform float _Blur_Mip_Bias;
             uniform float _Blur_Darken;
 
-            uniform SamplerState sampler_LogoTex; // unity set sampler by keywords in name https://docs.unity3d.com/Manual/SL-SamplerStates.html
+            uniform SamplerState sampler_clamp_bilinear; // unity set sampler by keywords in name https://docs.unity3d.com/Manual/SL-SamplerStates.html
             uniform Texture2D<float3> _LogoTex;
+            uniform float4 _Logo_Rotation_Scale_Offset;
+            uniform float _Logo_Opacity;
 
             void vertex_stage(VertexData input, out FragmentInput output) {
                 UNITY_SETUP_INSTANCE_ID(input);
@@ -106,6 +110,9 @@ Shader "Lereldarion/ExplorerCard" {
                 output.tangent_ws.xyz = UnityObjectToWorldDir(input.tangent.xyz);
                 output.tangent_ws.w = input.tangent.w * unity_WorldTransformParams.w;
                 output.uv0 = input.uv0;
+
+                sincos(_Logo_Rotation_Scale_Offset.x * UNITY_PI / 180.0, output.logo_rotation_cos_sin.y, output.logo_rotation_cos_sin.x);
+                output.logo_rotation_cos_sin /= _Logo_Rotation_Scale_Offset.y;
             }
 
             float length_sq(float2 v) { return dot(v, v); }
@@ -134,7 +141,7 @@ Shader "Lereldarion/ExplorerCard" {
             }
 
             // MSDF textures utils https://github.com/Chlumsky/msdfgen
-            float msdf_median(float3 msdf) { return max(min(msdf.r, msdf.g), min(max(msdf.r, msdf.g), msdf.b)); }
+            float median(float3 msd) { return max(min(msd.r, msd.g), min(max(msd.r, msd.g), msd.b)); }
             float msdf_blend(Texture2D<float3> tex, float2 uv, float pixel_range) {
                 // pixel range is the one used to generate the texture
                 float2 texture_size;
@@ -143,7 +150,10 @@ Shader "Lereldarion/ExplorerCard" {
                 const float2 screen_tex_size = rsqrt(pow2(ddx_fine(uv)) + pow2(ddy_fine(uv)));
                 const float screen_px_range = max(0.5 * dot(unit_range, screen_tex_size), 1.0);
 
-                const float tex_sdf = msdf_median(tex.Sample(sampler_LogoTex, uv)) - 0.5;
+                // TODO force to 0 for uv out of bounds
+                const float tex_sdf = median(tex.SampleLevel(sampler_clamp_bilinear, uv, 0)) - 0.5;
+
+                // TODO better AA ? revisit during text rendering
                 const float screen_sdf = screen_px_range * tex_sdf;
                 return saturate(screen_sdf + 0.5);
             }
@@ -192,7 +202,9 @@ Shader "Lereldarion/ExplorerCard" {
                         // Description text
                         blurred = true;
 
-                        logo_opacity = msdf_blend(_LogoTex, description_uv * 10, 6);
+                        // Logo
+                        const float2x2 logo_rotscale = float2x2(input.logo_rotation_cos_sin.xy, input.logo_rotation_cos_sin.yx * float2(-1, 1));
+                        logo_opacity = msdf_blend(_LogoTex, mul(logo_rotscale, description_uv - _Logo_Rotation_Scale_Offset.zw) + 0.5, 8);
 
                     } else if(description_box_outer > 0) {
                         // Title
@@ -221,7 +233,7 @@ Shader "Lereldarion/ExplorerCard" {
                     color = lerp(color, 0, _Blur_Darken);
                 }
 
-                color = lerp(color, _UI_Color.rgb, logo_opacity);
+                color = lerp(color, _UI_Color.rgb, logo_opacity * _Logo_Opacity);
                 
                 return fixed4(lerp(color, _UI_Color.rgb, sdf_blend_with_aa(ui_sdf)), 1);
             }
