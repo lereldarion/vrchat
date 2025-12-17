@@ -4,7 +4,7 @@
 // Procedural card design for explorer members
 // Should be placed on a quad, with UVs in [0, W]x[0, 1]. UVs should not be distorded. W in [0, 1] is the aspect ratio.
 // - Foreground / background textures are by default centered and using full height.
-// - Recommended texture configuration : clamp + trilinear.
+// - Recommended texture configuration : clamp + trilinear. Foreground with alpha, background without.
 
 Shader "Lereldarion/ExplorerCard" {
     Properties {
@@ -119,19 +119,23 @@ Shader "Lereldarion/ExplorerCard" {
             float3 safe_normalize(float3 v) { return v * rsqrt(max(0.001f, dot(v, v))); }
             float2 pow2(float2 v) { return v * v; }
             
-            // Inigo Quilez https://iquilezles.org/articles/distfunctions2d/
-            float sdf_chamfer_box(float2 p, float2 b, float chamfer) {
-                p = abs(p) - b;
-                p = p.y > p.x ? p.yx : p.xy;
-                p.y += chamfer;
-                const float k = 1.0 - sqrt(2.0);
-                if(p.y < 0 && p.y + p.x * k < 0) { return p.x; }
-                if(p.x < p.y) { return (p.x + p.y) * sqrt(0.5); }
-                return length(p);
+            // Inigo Quilez https://iquilezles.org/articles/distfunctions2d/. Use negative for interior.
+            float extrude_border_with_thickness(float sdf, float thickness) {
+                return abs(sdf) - thickness;
             }
-            float sdf_half_chamfer_box(float2 p, float2 b, float chamfer) {
+            float psdf_chamfer_box(float2 p, float2 b, float chamfer) {
+                // Pseudo SDF, with sharp corners. Useful to keep sharp corners when thickness is added.
+                const float2 d = abs(p) - b;
+                const float rectangle_sd = max(d.x, d.y);
+                const float chamfer_sd = sqrt(0.5) * (d.x + d.y + chamfer);
+                return max(rectangle_sd, chamfer_sd);
+            }
+            float psdf_half_chamfer_box(float2 p, float2 b, float chamfer) {
+                const float2 d = abs(p) - b;
+                const float rectangle_sd = max(d.x, d.y);
+                const float chamfer_sd = sqrt(0.5) * (d.x + d.y + chamfer);
                 bool2 positive = p >= 0;
-                return sdf_chamfer_box(p, b, positive.x != positive.y ? chamfer : 0);
+                return positive.x != positive.y ? max(rectangle_sd, chamfer_sd) : rectangle_sd;
             }
             
             // SDF anti-alias blend https://blog.pkh.me/p/44-perfecting-anti-aliasing-on-signed-distance-functions.html
@@ -182,23 +186,21 @@ Shader "Lereldarion/ExplorerCard" {
                 }
 
                 // Outer box
-                const float border_box_outer = sdf_chamfer_box(uv, quadrant_size - _UI_Margin_Size + _UI_Border_Thickness, _UI_Margin_Size);
-                const float border_box_inner = -sdf_chamfer_box(uv, quadrant_size - _UI_Margin_Size - _UI_Border_Thickness, _UI_Margin_Size);
-                ui_sdf = max(border_box_outer, border_box_inner);
+                const float border_box_sd = psdf_chamfer_box(uv, quadrant_size - _UI_Margin_Size, _UI_Margin_Size);
+                ui_sdf = extrude_border_with_thickness(border_box_sd, _UI_Border_Thickness);
 
                 // TODO border triangles
 
-                if(border_box_outer > 0) {
+                if(border_box_sd > 0) {
                     blurred = true;
-                } else if(border_box_inner > 0) {
+                } else {
                     // Description
                     const float2 description_uv = uv - float2(0, _UI_Description_Height + 2 * _UI_Margin_Size - quadrant_size.y);
                     const float2 description_size = float2(quadrant_size.x - 2 * _UI_Margin_Size, _UI_Description_Height);
-                    const float description_box_outer = sdf_half_chamfer_box(description_uv, description_size + _UI_Border_Thickness, 0.5 * _UI_Margin_Size);
-                    const float description_box_inner = -sdf_half_chamfer_box(description_uv, description_size - _UI_Border_Thickness, 0.5 * _UI_Margin_Size);
-                    ui_sdf = min(ui_sdf, max(description_box_inner, description_box_outer));
+                    const float description_box_sd = psdf_half_chamfer_box(description_uv, description_size, 0.5 * _UI_Margin_Size);
+                    ui_sdf = min(ui_sdf, extrude_border_with_thickness(description_box_sd, _UI_Border_Thickness));
 
-                    if(description_box_inner > 0) {
+                    if(description_box_sd <= 0) {
                         // Description text
                         blurred = true;
 
@@ -206,14 +208,13 @@ Shader "Lereldarion/ExplorerCard" {
                         const float2x2 logo_rotscale = float2x2(input.logo_rotation_cos_sin.xy, input.logo_rotation_cos_sin.yx * float2(-1, 1));
                         logo_opacity = msdf_blend(_LogoTex, mul(logo_rotscale, description_uv - _Logo_Rotation_Scale_Offset.zw) + 0.5, 8);
 
-                    } else if(description_box_outer > 0) {
+                    } else {
                         // Title
                         const float2 title_uv = uv - float2(0, quadrant_size.y - (_UI_Title_Height + 2 * _UI_Margin_Size));
                         const float2 title_size = float2(quadrant_size.x - 2 * _UI_Margin_Size, _UI_Title_Height);
-                        const float title_box_outer = sdf_half_chamfer_box(title_uv, title_size + _UI_Border_Thickness, 0.5 * _UI_Margin_Size);
-                        const float title_box_inner = -sdf_half_chamfer_box(title_uv, title_size - _UI_Border_Thickness, 0.5 * _UI_Margin_Size);
-                        blurred = title_box_inner > 0;
-                        ui_sdf = min(ui_sdf, max(title_box_inner, title_box_outer));
+                        const float title_box_sd = psdf_half_chamfer_box(title_uv, title_size, 0.5 * _UI_Margin_Size);
+                        blurred = title_box_sd <= 0;
+                        ui_sdf = min(ui_sdf, extrude_border_with_thickness(title_box_sd, _UI_Border_Thickness));
                     }
                 }
 
