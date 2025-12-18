@@ -35,9 +35,9 @@ Shader "Lereldarion/ExplorerCard" {
         // _Blur_Darken("Darken blurred areas", Range(0, 1)) = 0.3
 
         [Header(Logo)]
+        _Logo_Color("Color", Color) = (1, 1, 1, 0.1)
         [HideInInspector] [NoScaleOffset] _LogoTex("Logo (MSDF)", 2D) = "" {}
         // _Logo_Rotation_Scale_Offset("Logo rotation, scale, offset", Vector) = (24, 0.41, 0.19, -0.1)
-        // _Logo_Opacity("Logo opacity", Range(0, 1)) = 0.1
     }
     SubShader {
         Tags {
@@ -105,8 +105,8 @@ Shader "Lereldarion/ExplorerCard" {
 
             uniform SamplerState sampler_clamp_bilinear; // unity set sampler by keywords in name https://docs.unity3d.com/Manual/SL-SamplerStates.html
             uniform Texture2D<float3> _LogoTex;
+            uniform fixed4 _Logo_Color;
             static const float4 _Logo_Rotation_Scale_Offset = float4(24, 0.41, 0.19, -0.1);
-            static const float _Logo_Opacity = 0.1;
 
             void vertex_stage(VertexData input, out FragmentInput output) {
                 UNITY_SETUP_INSTANCE_ID(input);
@@ -252,7 +252,7 @@ Shader "Lereldarion/ExplorerCard" {
                     color = lerp(color, 0, _Blur_Darken);
                 }
 
-                color = lerp(color, _UI_Color.rgb, logo_opacity * _Logo_Opacity);
+                color = lerp(color, _Logo_Color.rgb, logo_opacity * _Logo_Color.a);
                 
                 return fixed4(lerp(color, _UI_Color.rgb, sdf_blend_with_aa(ui_sd)), 1);
             }
