@@ -1,10 +1,12 @@
 ﻿// Made by Lereldarion (https://github.com/lereldarion/)
 // Free to redistribute under the MIT license
 
-// Procedural card design for explorer members
+// Procedural card design for explorer members.
 // Should be placed on a quad, with UVs in [0, W]x[0, 1]. UVs should not be distorded. W in [0, 1] is the aspect ratio.
 // - Foreground / background textures are by default centered and using full height.
 // - Recommended texture configuration : clamp + trilinear. Foreground with alpha, background without.
+//
+// Many properties are baked to constants now that the design is validated. The selectors are kept but commented out.
 
 Shader "Lereldarion/ExplorerCard" {
     Properties {
@@ -14,28 +16,28 @@ Shader "Lereldarion/ExplorerCard" {
         _BackgroundTex("Background Texture", 2D) = "" {}
         _Parallax_Depth("Background parallax depth", Range(0, 1)) = 0.1
 
-        [Header(Card Shape)]
-        _Aspect_Ratio("Maximum UV width (aspect ratio of card quad)", Range(0, 1)) = 0.707
-        _Corner_Radius("Radius of corners", Range(0, 0.1)) = 0.024
+        // [Header(Card Shape)]
+        // _Aspect_Ratio("Maximum UV width (aspect ratio of card quad)", Range(0, 1)) = 0.707
+        // _Corner_Radius("Radius of corners", Range(0, 0.1)) = 0.024
         
         [Header(UI)]
         _UI_Color("Color", Color) = (1, 1, 1, 1)
-        _UI_Common_Margin("Common margin size", Range(0, 0.1)) = 0.03
-        _UI_Border_Thickness("Thickness of block borders", Range(0, 0.01)) = 0.0015
-        _UI_Outer_Border_Chamfer("Outer border chamfer", Range(0, 0.1)) = 0.04
-        _UI_Title_Height("Title box height", Range(0, 0.1)) = 0.036
-        _UI_Title_Chamfer("Title box chamfer", Range(0, 0.1)) = 0.023
-        _UI_Description_Height("Description box height", Range(0, 0.5)) = 0.15
-        _UI_Description_Chamfer("Description box chamfer", Range(0, 0.1)) = 0.034
+        // _UI_Common_Margin("Common margin size", Range(0, 0.1)) = 0.03
+        // _UI_Border_Thickness("Thickness of block borders", Range(0, 0.01)) = 0.0015
+        // _UI_Outer_Border_Chamfer("Outer border chamfer", Range(0, 0.1)) = 0.04
+        // _UI_Title_Height("Title box height", Range(0, 0.1)) = 0.036
+        // _UI_Title_Chamfer("Title box chamfer", Range(0, 0.1)) = 0.023
+        // _UI_Description_Height("Description box height", Range(0, 0.5)) = 0.15
+        // _UI_Description_Chamfer("Description box chamfer", Range(0, 0.1)) = 0.034
         
-        [Header(Blurring effect)]
-        _Blur_Mip_Bias("Blur Mip bias", Range(-16, 16)) = 2
-        _Blur_Darken("Darken blurred areas", Range(0, 1)) = 0.3
+        // [Header(Blurring effect)]
+        // _Blur_Mip_Bias("Blur Mip bias", Range(-16, 16)) = 2
+        // _Blur_Darken("Darken blurred areas", Range(0, 1)) = 0.3
 
         [Header(Logo)]
-        [NoScaleOffset] _LogoTex("Logo (MSDF)", 2D) = "" {}
-        _Logo_Rotation_Scale_Offset("Logo rotation, scale, offset", Vector) = (24, 0.41, 0.19, -0.1)
-        _Logo_Opacity("Logo opacity", Range(0, 1)) = 0.1
+        [HideInInspector] [NoScaleOffset] _LogoTex("Logo (MSDF)", 2D) = "" {}
+        // _Logo_Rotation_Scale_Offset("Logo rotation, scale, offset", Vector) = (24, 0.41, 0.19, -0.1)
+        // _Logo_Opacity("Logo opacity", Range(0, 1)) = 0.1
     }
     SubShader {
         Tags {
@@ -74,7 +76,6 @@ Shader "Lereldarion/ExplorerCard" {
                 float3 normal_ws : NORMAL_WS;
                 float4 tangent_ws : TANGENT_WS;
                 float2 uv0 : UV0;
-                nointerpolation float2 logo_rotation_cos_sin : LOGO_ROTATION_COS_SIN;
                 UNITY_VERTEX_OUTPUT_STEREO
             };
             
@@ -87,25 +88,25 @@ Shader "Lereldarion/ExplorerCard" {
             uniform float4 _BackgroundTex_ST;
             uniform float _Parallax_Depth;
 
-            uniform float _Aspect_Ratio;
-            uniform float _Corner_Radius;
+            static const float _Aspect_Ratio = 0.707;
+            static const float _Corner_Radius = 0.024;
             
             uniform fixed4 _UI_Color;
-            uniform float _UI_Common_Margin;
-            uniform float _UI_Border_Thickness;
-            uniform float _UI_Outer_Border_Chamfer;
-            uniform float _UI_Title_Height;
-            uniform float _UI_Title_Chamfer;
-            uniform float _UI_Description_Height;
-            uniform float _UI_Description_Chamfer;
+            static const float _UI_Common_Margin = 0.03;
+            static const float _UI_Border_Thickness = 0.0015;
+            static const float _UI_Outer_Border_Chamfer = 0.04;
+            static const float _UI_Title_Height = 0.036;
+            static const float _UI_Title_Chamfer = 0.023;
+            static const float _UI_Description_Height = 0.15;
+            static const float _UI_Description_Chamfer = 0.034;
 
-            uniform float _Blur_Mip_Bias;
-            uniform float _Blur_Darken;
+            static const float _Blur_Mip_Bias = 2;
+            static const float _Blur_Darken = 0.3;
 
             uniform SamplerState sampler_clamp_bilinear; // unity set sampler by keywords in name https://docs.unity3d.com/Manual/SL-SamplerStates.html
             uniform Texture2D<float3> _LogoTex;
-            uniform float4 _Logo_Rotation_Scale_Offset;
-            uniform float _Logo_Opacity;
+            static const float4 _Logo_Rotation_Scale_Offset = float4(24, 0.41, 0.19, -0.1);
+            static const float _Logo_Opacity = 0.1;
 
             void vertex_stage(VertexData input, out FragmentInput output) {
                 UNITY_SETUP_INSTANCE_ID(input);
@@ -116,9 +117,6 @@ Shader "Lereldarion/ExplorerCard" {
                 output.tangent_ws.xyz = UnityObjectToWorldDir(input.tangent.xyz);
                 output.tangent_ws.w = input.tangent.w * unity_WorldTransformParams.w;
                 output.uv0 = input.uv0;
-
-                sincos(_Logo_Rotation_Scale_Offset.x * UNITY_PI / 180.0, output.logo_rotation_cos_sin.y, output.logo_rotation_cos_sin.x);
-                output.logo_rotation_cos_sin /= _Logo_Rotation_Scale_Offset.y;
             }
 
             float length_sq(float2 v) { return dot(v, v); }
@@ -222,7 +220,10 @@ Shader "Lereldarion/ExplorerCard" {
                         blurred = true;
 
                         // Logo
-                        const float2x2 logo_rotscale = float2x2(input.logo_rotation_cos_sin.xy, input.logo_rotation_cos_sin.yx * float2(-1, 1));
+                        float2 logo_rotation_cos_sin;
+                        sincos(_Logo_Rotation_Scale_Offset.x * UNITY_PI / 180.0, logo_rotation_cos_sin.y, logo_rotation_cos_sin.x);
+                        logo_rotation_cos_sin /= _Logo_Rotation_Scale_Offset.y;
+                        const float2x2 logo_rotscale = float2x2(logo_rotation_cos_sin.xy, logo_rotation_cos_sin.yx * float2(-1, 1));
                         logo_opacity = msdf_blend(_LogoTex, mul(logo_rotscale, description_uv - _Logo_Rotation_Scale_Offset.zw) + 0.5, 8);
 
                     } else {
