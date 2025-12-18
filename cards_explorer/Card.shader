@@ -15,23 +15,26 @@ Shader "Lereldarion/ExplorerCard" {
         _Parallax_Depth("Background parallax depth", Range(0, 1)) = 0.1
 
         [Header(Card Shape)]
-        _Aspect_Ratio("Maximum UV width (aspect ratio)", Range(0, 1)) = 0.716
-        _Corner_Radius("Radius of corners", Range(0, 0.2)) = 0.06
+        _Aspect_Ratio("Maximum UV width (aspect ratio of card quad)", Range(0, 1)) = 0.707
+        _Corner_Radius("Radius of corners", Range(0, 0.1)) = 0.024
         
         [Header(UI)]
         _UI_Color("Color", Color) = (1, 1, 1, 1)
-        _UI_Margin_Size("Size of block margins", Range(0, 0.2)) = 0.03
-        _UI_Border_Thickness("Thickness of block borders", Range(0, 0.01)) = 0.001
-        _UI_Title_Height("Title box height", Range(0, 0.1)) = 0.03
+        _UI_Common_Margin("Common margin size", Range(0, 0.1)) = 0.03
+        _UI_Border_Thickness("Thickness of block borders", Range(0, 0.01)) = 0.0015
+        _UI_Outer_Border_Chamfer("Outer border chamfer", Range(0, 0.1)) = 0.04
+        _UI_Title_Height("Title box height", Range(0, 0.1)) = 0.036
+        _UI_Title_Chamfer("Title box chamfer", Range(0, 0.1)) = 0.023
         _UI_Description_Height("Description box height", Range(0, 0.5)) = 0.15
+        _UI_Description_Chamfer("Description box chamfer", Range(0, 0.1)) = 0.034
         
         [Header(Blurring effect)]
         _Blur_Mip_Bias("Blur Mip bias", Range(-16, 16)) = 2
         _Blur_Darken("Darken blurred areas", Range(0, 1)) = 0.3
 
         [Header(Logo)]
-        [NoScaleOffset] _LogoTex("Logo", 2D) = "" {}
-        _Logo_Rotation_Scale_Offset("Logo rotation, scale, offset", Vector) = (30, 0.4, 0.19, -0.06)
+        [NoScaleOffset] _LogoTex("Logo (MSDF)", 2D) = "" {}
+        _Logo_Rotation_Scale_Offset("Logo rotation, scale, offset", Vector) = (24, 0.41, 0.19, -0.1)
         _Logo_Opacity("Logo opacity", Range(0, 1)) = 0.1
     }
     SubShader {
@@ -88,10 +91,13 @@ Shader "Lereldarion/ExplorerCard" {
             uniform float _Corner_Radius;
             
             uniform fixed4 _UI_Color;
-            uniform float _UI_Margin_Size;
+            uniform float _UI_Common_Margin;
             uniform float _UI_Border_Thickness;
+            uniform float _UI_Outer_Border_Chamfer;
             uniform float _UI_Title_Height;
+            uniform float _UI_Title_Chamfer;
             uniform float _UI_Description_Height;
+            uniform float _UI_Description_Chamfer;
 
             uniform float _Blur_Mip_Bias;
             uniform float _Blur_Darken;
@@ -134,8 +140,7 @@ Shader "Lereldarion/ExplorerCard" {
                 const float2 d = abs(p) - b;
                 const float rectangle_sd = max(d.x, d.y);
                 const float chamfer_sd = sqrt(0.5) * (d.x + d.y + chamfer);
-                bool2 positive = p >= 0;
-                return positive.x != positive.y ? max(rectangle_sd, chamfer_sd) : rectangle_sd;
+                return (p.x >= 0) != (p.y >= 0) ? max(rectangle_sd, chamfer_sd) : rectangle_sd;
             }
             
             // SDF anti-alias blend https://blog.pkh.me/p/44-perfecting-anti-aliasing-on-signed-distance-functions.html
@@ -154,7 +159,7 @@ Shader "Lereldarion/ExplorerCard" {
                 const float2 screen_tex_size = rsqrt(pow2(ddx_fine(uv)) + pow2(ddy_fine(uv)));
                 const float screen_px_range = max(0.5 * dot(unit_range, screen_tex_size), 1.0);
 
-                // TODO force to 0 for uv out of bounds
+                // TODO force to 0 for uv out of bounds ?
                 const float tex_sdf = median(tex.SampleLevel(sampler_clamp_bilinear, uv, 0)) - 0.5;
 
                 // TODO better AA ? revisit during text rendering
@@ -172,33 +177,45 @@ Shader "Lereldarion/ExplorerCard" {
                 const float3 view_dir_ts = mul(tbn_matrix, view_dir_ws);
 
                 // UVs.
-                const float2 max_uv = float2(_Aspect_Ratio, 1);
-                const float2 uv = input.uv0 - 0.5 * max_uv; // [-AR/2, AR/2] x [-0.5, 0.5]
-                const float2 quadrant_size = 0.5 * max_uv;
+                const float2 raw_uv_range = float2(_Aspect_Ratio, 1);
+                const float2 quadrant_size = 0.5 * raw_uv_range;
+                const float2 centered_uv = input.uv0 - quadrant_size; // [-AR/2, AR/2] x [-0.5, 0.5]
                 
                 bool blurred = false;
-                float ui_sdf;
+                float ui_sd;
                 float logo_opacity = 0;
 
                 // Round corners. Inigo Quilez SDF strategy, L2 distance to inner rectangle.
-                if(length_sq(max(abs(uv) - (quadrant_size - _Corner_Radius), 0)) > _Corner_Radius * _Corner_Radius) {
+                if(length_sq(max(abs(centered_uv) - (quadrant_size - _Corner_Radius), 0)) > _Corner_Radius * _Corner_Radius) {
                      discard;
                 }
 
                 // Outer box
-                const float border_box_sd = psdf_chamfer_box(uv, quadrant_size - _UI_Margin_Size, _UI_Margin_Size);
-                ui_sdf = extrude_border_with_thickness(border_box_sd, _UI_Border_Thickness);
+                const float border_box_sd = psdf_chamfer_box(centered_uv, quadrant_size - _UI_Common_Margin, _UI_Outer_Border_Chamfer);
+                ui_sd = extrude_border_with_thickness(border_box_sd, _UI_Border_Thickness);
 
-                // TODO border triangles
+                // Border triangles gizmos
+                if((centered_uv.x >= 0) == (centered_uv.y >= 0)) {
+                    const float2 p = abs(centered_uv) - (quadrant_size - _Corner_Radius); // Corner at curved edge center
+                    const float rectangle_edges_sd = max(p.x, p.y);
+                    const float diag_axis = sqrt(0.5) * (p.x + p.y);
+                    // Align outer triangle diagonal with inner chamfer
+                    const float diag_offset_a = (_UI_Common_Margin + 0.5 * _UI_Outer_Border_Chamfer - _Corner_Radius) * sqrt(2) + _UI_Border_Thickness;
+                    const float diag_offset_b = diag_offset_a - 6 * _UI_Border_Thickness;
+                    const float diag_offset_c = diag_offset_b - 4 * _UI_Border_Thickness;
+
+                    const float gizmo_sd = max(rectangle_edges_sd, min(max(-(diag_axis + diag_offset_a), diag_axis + diag_offset_b), -(diag_axis + diag_offset_c)));
+                    ui_sd = min(ui_sd, gizmo_sd);
+                }
 
                 if(border_box_sd > 0) {
                     blurred = true;
                 } else {
                     // Description
-                    const float2 description_uv = uv - float2(0, _UI_Description_Height + 2 * _UI_Margin_Size - quadrant_size.y);
-                    const float2 description_size = float2(quadrant_size.x - 2 * _UI_Margin_Size, _UI_Description_Height);
-                    const float description_box_sd = psdf_half_chamfer_box(description_uv, description_size, 0.5 * _UI_Margin_Size);
-                    ui_sdf = min(ui_sdf, extrude_border_with_thickness(description_box_sd, _UI_Border_Thickness));
+                    const float2 description_uv = centered_uv - float2(0, _UI_Description_Height + 2 * _UI_Common_Margin - quadrant_size.y);
+                    const float2 description_size = float2(quadrant_size.x - 2 * _UI_Common_Margin, _UI_Description_Height);
+                    const float description_box_sd = psdf_half_chamfer_box(description_uv, description_size, _UI_Description_Chamfer);
+                    ui_sd = min(ui_sd, extrude_border_with_thickness(description_box_sd, _UI_Border_Thickness));
 
                     if(description_box_sd <= 0) {
                         // Description text
@@ -210,18 +227,18 @@ Shader "Lereldarion/ExplorerCard" {
 
                     } else {
                         // Title
-                        const float2 title_uv = uv - float2(0, quadrant_size.y - (_UI_Title_Height + 2 * _UI_Margin_Size));
-                        const float2 title_size = float2(quadrant_size.x - 2 * _UI_Margin_Size, _UI_Title_Height);
-                        const float title_box_sd = psdf_half_chamfer_box(title_uv, title_size, 0.5 * _UI_Margin_Size);
+                        const float2 title_uv = centered_uv - float2(0, quadrant_size.y - (_UI_Title_Height + 2 * _UI_Common_Margin));
+                        const float2 title_size = float2(quadrant_size.x - 2 * _UI_Common_Margin, _UI_Title_Height);
+                        const float title_box_sd = psdf_half_chamfer_box(title_uv, title_size, _UI_Title_Chamfer);
                         blurred = title_box_sd <= 0;
-                        ui_sdf = min(ui_sdf, extrude_border_with_thickness(title_box_sd, _UI_Border_Thickness));
+                        ui_sd = min(ui_sd, extrude_border_with_thickness(title_box_sd, _UI_Border_Thickness));
                     }
                 }
 
                 // Texture sampling with parallax.
                 // Make tiling and offset values work on the center
-                const float2 foreground_uv = uv * _MainTex_ST.xy + 0.5 + _MainTex_ST.zw;
-                const float2 background_uv = (uv + ParallaxOffset(-1, _Parallax_Depth, view_dir_ts)) * _BackgroundTex_ST.xy + 0.5 + _BackgroundTex_ST.zw; // TODO fade to mipmaps on border ?
+                const float2 foreground_uv = centered_uv * _MainTex_ST.xy + 0.5 + _MainTex_ST.zw;
+                const float2 background_uv = (centered_uv + ParallaxOffset(-1, _Parallax_Depth, view_dir_ts)) * _BackgroundTex_ST.xy + 0.5 + _BackgroundTex_ST.zw; // TODO fade to mipmaps on border ?
                 
                 // Handle blurring with mip bias : use a blurrier mip than adequate.
                 // This may fail from too close if biased mip is clamped to 0 anyway, but this seems ok for 1K / 2K textures at card scale.
@@ -236,7 +253,7 @@ Shader "Lereldarion/ExplorerCard" {
 
                 color = lerp(color, _UI_Color.rgb, logo_opacity * _Logo_Opacity);
                 
-                return fixed4(lerp(color, _UI_Color.rgb, sdf_blend_with_aa(ui_sdf)), 1);
+                return fixed4(lerp(color, _UI_Color.rgb, sdf_blend_with_aa(ui_sd)), 1);
             }
             ENDCG            
         }
