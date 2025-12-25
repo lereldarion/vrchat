@@ -10,11 +10,10 @@
 
 Shader "Lereldarion/ExplorerCard" {
     Properties {
-        _MainTex("Front Texture", 2D) = "" {}
-
-        [Header(Parallax)]
-        _BackgroundTex("Background Texture", 2D) = "" {}
-        _Parallax_Depth("Background parallax depth", Range(0, 1)) = 0.1
+        _MainTex("Avatar (alpha cutout)", 2D) = "" {}
+        _BackgroundTex("Background (no alpha)", 2D) = "" {}
+        _Avatar_Parallax_Depth("Avatar parallax depth", Range(0, 1)) = 0.01
+        _Background_Parallax_Depth("Background parallax depth", Range(0, 1)) = 0.1
 
         // [Header(Card Shape)]
         // _Aspect_Ratio("Maximum UV width (aspect ratio of card quad)", Range(0, 1)) = 0.707
@@ -38,6 +37,13 @@ Shader "Lereldarion/ExplorerCard" {
         _Logo_Color("Color", Color) = (1, 1, 1, 0.1)
         [HideInInspector] [NoScaleOffset] _LogoTex("Logo (MSDF)", 2D) = "" {}
         // _Logo_Rotation_Scale_Offset("Logo rotation, scale, offset", Vector) = (24, 0.41, 0.19, -0.1)
+        // _Logo_MSDF_Pixel_Range("Logo MSDF pixel range", Float) = 8
+
+        [Header(Text)]
+        [NoScaleOffset] _FontTex("Font (MSDF)", 2D) = "" {}
+        // _Font_MSDF_Pixel_Range("Font MSDF pixel range", Float) = 2
+        _Font_Test_Character("Test character", Integer) = 0
+        _Font_Test_Size("Test size", Float) = 1
     }
     SubShader {
         Tags {
@@ -78,15 +84,18 @@ Shader "Lereldarion/ExplorerCard" {
                 float2 uv0 : UV0;
                 UNITY_VERTEX_OUTPUT_STEREO
             };
+
+            // Common hardcoded sampler. Set by keywords in name https://docs.unity3d.com/Manual/SL-SamplerStates.html
+            uniform SamplerState sampler_clamp_bilinear;
             
             uniform Texture2D<fixed4> _MainTex;
             uniform SamplerState sampler_MainTex;
             uniform float4 _MainTex_ST;
-
             uniform Texture2D<fixed3> _BackgroundTex;
             uniform SamplerState sampler_BackgroundTex;
             uniform float4 _BackgroundTex_ST;
-            uniform float _Parallax_Depth;
+            uniform float _Avatar_Parallax_Depth;
+            uniform float _Background_Parallax_Depth;
 
             static const float _Aspect_Ratio = 0.707;
             static const float _Corner_Radius = 0.024;
@@ -103,10 +112,15 @@ Shader "Lereldarion/ExplorerCard" {
             static const float _Blur_Mip_Bias = 2;
             static const float _Blur_Darken = 0.3;
 
-            uniform SamplerState sampler_clamp_bilinear; // unity set sampler by keywords in name https://docs.unity3d.com/Manual/SL-SamplerStates.html
             uniform Texture2D<float3> _LogoTex;
             uniform fixed4 _Logo_Color;
             static const float4 _Logo_Rotation_Scale_Offset = float4(24, 0.41, 0.19, -0.1);
+            static const float _Logo_MSDF_Pixel_Range = 8;
+
+            uniform Texture2D<float3> _FontTex;
+            static const float _Font_MSDF_Pixel_Range = 2;
+            uniform uint _Font_Test_Character;
+            uniform float _Font_Test_Size;
 
             void vertex_stage(VertexData input, out FragmentInput output) {
                 UNITY_SETUP_INSTANCE_ID(input);
@@ -150,19 +164,26 @@ Shader "Lereldarion/ExplorerCard" {
             // MSDF textures utils https://github.com/Chlumsky/msdfgen
             float median(float3 msd) { return max(min(msd.r, msd.g), min(max(msd.r, msd.g), msd.b)); }
             float msdf_blend(Texture2D<float3> tex, float2 uv, float pixel_range) {
-                // pixel range is the one used to generate the texture
+                const float tex_sd = median(tex.SampleLevel(sampler_clamp_bilinear, uv, 0)) - 0.5;
+
+                // Scale stored texture sdf to screen.
+                // pixel_range is the one used to generate the texture
                 float2 texture_size;
                 tex.GetDimensions(texture_size.x, texture_size.y);
                 const float2 unit_range = pixel_range / texture_size;
                 const float2 screen_tex_size = rsqrt(pow2(ddx_fine(uv)) + pow2(ddy_fine(uv)));
                 const float screen_px_range = max(0.5 * dot(unit_range, screen_tex_size), 1.0);
+                const float screen_sd = screen_px_range * tex_sd;
+                return saturate(screen_sd + 0.5);
+                // TODO rework in terms of msdf_sample ?
+            }
+            float msdf_sample(Texture2D<float3> tex, float2 uv, float pixel_range, float2 texture_size) {
+                const float tex_sd = median(tex.SampleLevel(sampler_clamp_bilinear, uv, 0)) - 0.5;
 
-                // TODO force to 0 for uv out of bounds ?
-                const float tex_sdf = median(tex.SampleLevel(sampler_clamp_bilinear, uv, 0)) - 0.5;
-
-                // TODO better AA ? revisit during text rendering
-                const float screen_sdf = screen_px_range * tex_sdf;
-                return saturate(screen_sdf + 0.5);
+                // tex_sd is in [-0.5, 0.5]. It represents texture pixel ranges between [-pixel_range, pixel_range].
+                const float texture_pixel_sd = tex_sd * 2 * pixel_range;
+                const float texture_uv_sd = texture_pixel_sd / texture_size;
+                return -texture_uv_sd; // MSDF tooling generates inverted SDF (positive inside)
             }
 
             fixed4 fragment_stage(FragmentInput input) : SV_Target {
@@ -224,8 +245,23 @@ Shader "Lereldarion/ExplorerCard" {
                         sincos(_Logo_Rotation_Scale_Offset.x * UNITY_PI / 180.0, logo_rotation_cos_sin.y, logo_rotation_cos_sin.x);
                         logo_rotation_cos_sin /= _Logo_Rotation_Scale_Offset.y;
                         const float2x2 logo_rotscale = float2x2(logo_rotation_cos_sin.xy, logo_rotation_cos_sin.yx * float2(-1, 1));
-                        logo_opacity = msdf_blend(_LogoTex, mul(logo_rotscale, description_uv - _Logo_Rotation_Scale_Offset.zw) + 0.5, 8);
+                        logo_opacity = msdf_blend(_LogoTex, mul(logo_rotscale, description_uv - _Logo_Rotation_Scale_Offset.zw) + 0.5, _Logo_MSDF_Pixel_Range);
 
+                        // Text test
+                        float font_tex_size = 512;
+                        float2 glyph_pixels = float2(51, 46);
+
+                        uint glyph_row = _Font_Test_Character / 10;
+                        uint glyph_col = _Font_Test_Character - glyph_row * 10;
+
+                        float font_pixel_uv = 1. / font_tex_size;
+                        float2 font_glyph_uv_size = font_pixel_uv * glyph_pixels;
+                        float2 cell_uv = description_uv * _Font_Test_Size + 0.5 * font_glyph_uv_size;
+                        if(all(cell_uv == clamp(cell_uv, 0, font_glyph_uv_size))) {
+                            float2 cell_offset = float2(font_glyph_uv_size.x * glyph_col, 1. - font_glyph_uv_size.y * (glyph_row + 1));
+                            ui_sd = min(ui_sd, msdf_sample(_FontTex, cell_uv + cell_offset, _Font_MSDF_Pixel_Range, font_tex_size));
+                            // artefacts due to stitching sdfs but not continuous
+                        }
                     } else {
                         // Title
                         const float2 title_uv = centered_uv - float2(0, quadrant_size.y - (_UI_Title_Height + 2 * _UI_Common_Margin));
@@ -238,13 +274,13 @@ Shader "Lereldarion/ExplorerCard" {
 
                 // Texture sampling with parallax.
                 // Make tiling and offset values work on the center
-                const float2 foreground_uv = centered_uv * _MainTex_ST.xy + 0.5 + _MainTex_ST.zw;
-                const float2 background_uv = (centered_uv + ParallaxOffset(-1, _Parallax_Depth, view_dir_ts)) * _BackgroundTex_ST.xy + 0.5 + _BackgroundTex_ST.zw; // TODO fade to mipmaps on border ?
+                const float2 avatar_uv = (centered_uv + ParallaxOffset(-1, _Avatar_Parallax_Depth, view_dir_ts)) * _MainTex_ST.xy + 0.5 + _MainTex_ST.zw;
+                const float2 background_uv = (centered_uv + ParallaxOffset(-1, _Background_Parallax_Depth, view_dir_ts)) * _BackgroundTex_ST.xy + 0.5 + _BackgroundTex_ST.zw;
                 
                 // Handle blurring with mip bias : use a blurrier mip than adequate.
                 // This may fail from too close if biased mip is clamped to 0 anyway, but this seems ok for 1K / 2K textures at card scale.
                 const float mip_bias = blurred ? _Blur_Mip_Bias : 0;
-                const fixed4 foreground = _MainTex.SampleBias(sampler_MainTex, foreground_uv, mip_bias);
+                const fixed4 foreground = _MainTex.SampleBias(sampler_MainTex, avatar_uv, mip_bias);
                 const fixed3 background = _BackgroundTex.SampleBias(sampler_BackgroundTex, background_uv, mip_bias);
                 fixed3 color = lerp(background, foreground.rgb, foreground.a);
 
