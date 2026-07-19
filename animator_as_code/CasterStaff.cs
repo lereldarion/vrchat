@@ -230,8 +230,9 @@ namespace Lereldarion {
                 }
             }
 
-            // Position transitions
+            // Position transitions.
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
+                EffectConfig e_config = effect_config[e];
                 foreach(Target t in supported_targets_for_effect(e)) {
                     TargetConfig t_config = target_config[t];
                     AacFlState storage = steady_states[(Position.Storage, e, t)];
@@ -239,11 +240,12 @@ namespace Lereldarion {
                     AacFlState two_handed = steady_states[(Position.TwoHanded, e, t)];
                     AacFlState world = steady_states[(Position.World, e, t)];
 
-                    AacFlState storage_to_hand = layer.NewState($"Deploy@{e}@{t}");
-                    storage_to_hand.Drives(synced, state_id[(Position.OneHanded, e, t)]).DrivingLocally(); // Early sync
+                    // OneHanded
+                    AacFlState deploy = layer.NewState($"Deploy@{e}@{t}");
+                    deploy.Drives(synced, state_id[(Position.OneHanded, e, t)]).DrivingLocally(); // Early sync
                     {
                         AacFlClip clip = aac.NewClip();
-                        storage_to_hand.WithAnimation(clip);
+                        deploy.WithAnimation(clip);
                         // Immediate 1-hand
                         clip.TogglingComponent(staff_aim_constraint, false);
                         clip.Animating(SetConstraintActiveSource(staff_parent_constraint, 1));
@@ -251,7 +253,7 @@ namespace Lereldarion {
                         clip.Animating(SetConstraintWorldFixed(staff_parent_constraint, false));
                         // Un-Dissolve
                         clip.Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(keys => keys.Linear(0f, 1f).Linear(0.5f, 0f)));
-                        if (effect_config[e].HasDissolve) {
+                        if (e_config.HasDissolve) {
                             clip.Animating(edit => edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.x").WithSecondsUnit(keys => {
                                 keys.Linear(0f, t_config.DissolvedRadius);
                                 keys.Linear(0.5f, t_config.DissolvedRadius); // End of staff un-dissolve
@@ -262,24 +264,35 @@ namespace Lereldarion {
                             clip.TogglingComponent(config.Surface, false); // Temporary disable surface
                         }
                     }
+                    deploy.AutomaticallyMovesTo(one_handed);
 
-                    // TODO dissolve
-                    AacFlState store = layer.NewState($"Store@{e}@{t}"); // Store from any position.
+                    AacFlState store = layer.NewState($"Store@{e}@{t}");
                     store.Drives(synced, state_id[(Position.Storage, e, t)]).DrivingLocally(); // Early sync
-                    store.WithAnimation(aac.NewClip()
-                        // Dissolve only, followed by instant Storage. Do not relocate, so we can reuse the previous constraint state
-                        .Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(keys => keys.Linear(0f, 0f).Linear(0.5f, 1f)))
-                        .Toggling(config.StaffContacts, false) // Early contact disable
-                        .TogglingComponent(config.Surface, false) // Temporary disable surface
-                    );
+                    {
+                        // Dissolve staff, maybe effect before. Then instant transition that relocate to storage.
+                        // In case of raycast, keep it unchanged. A weird possible config using menu deploy with stored staff and raycast left in the world.
+                        AacFlClip clip = aac.NewClip();
+                        store.WithAnimation(clip);
+                        clip.Toggling(config.StaffContacts, false); // Early contact disable
+                        if(e_config.HasDissolve && t != Target.Raycast) {
+                            clip.Animating(edit => {
+                                edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(keys => keys.Linear(0f, 0f).Linear(0.2f, 0f).Linear(0.7f, 1f));
+                                edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.x").WithSecondsUnit(keys => {
+                                    keys.Linear(0f, t_config.Dissolve.x);
+                                    keys.Linear(0.2f, t_config.DissolvedRadius);
+                                });
+                            });
+                        } else {
+                            if(t != Target.Raycast) clip.TogglingComponent(config.Surface, false); // Temporary disable surface
+                            clip.Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(keys => keys.Linear(0f, 0f).Linear(0.5f, 1f)));
+                        }
+                    }
                     store.AutomaticallyMovesTo(storage);
 
-                    storage.TransitionsTo(storage_to_hand)
+                    storage.TransitionsTo(deploy)
                     .When(layer.Av3().ItIsLocal()).And(staff_storage_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.Fist))
                     .Or().When(layer.Av3().ItIsLocal()).And(menu_deploy.IsTrue())
                     .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.OneHanded, e, t)]));
-
-                    storage_to_hand.AutomaticallyMovesTo(one_handed);
 
                     one_handed.TransitionsTo(store)
                     .When(layer.Av3().ItIsLocal()).And(staff_storage_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.HandOpen))
@@ -314,7 +327,7 @@ namespace Lereldarion {
                 }
             }
 
-            // Effect swap, from effect e to another
+            // Effect swap, from effect e to another.
             foreach(Position p in System.Enum.GetValues(typeof(Position))) {
                 if(p == Position.Storage) continue; // Ignore ; Contacts are not available anyway.
                 // Two handed can only trigger swaps if another player uses the contacts
@@ -392,7 +405,7 @@ namespace Lereldarion {
                 }
             }
 
-            // Target swap
+            // Target swap.
             // Ignore storage, and two handed as we need the right hand free.
             var positions_that_can_target_swap = new[]{ Position.OneHanded, Position.World };
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
