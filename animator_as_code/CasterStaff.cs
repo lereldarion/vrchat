@@ -66,37 +66,38 @@ namespace Lereldarion {
 
         private struct EffectConfig
         {
-            public Vector4 emission_ST;
-            public System.Func<CasterStaff, Material> material;
-            public System.Func<CasterStaff, Material> trail; // Returns a null if not capable of trail
-            public bool can_sphere; // Is fake-sphere capable, and thus can be grabbed and moved around (Hand, Raycast, Staff modes)
-            public bool dissolve; // Has a dissolve on the edges
+            public Vector4 EmissionST;
+            public System.Func<CasterStaff, Material> Material;
+            public System.Func<CasterStaff, Material> Trail; // Returns a null if not capable of trail
+            public bool CanSphere; // Is fake-sphere capable, and thus can be grabbed and moved around (Hand, Raycast, Staff modes)
+            public bool HasDissolve; // Has a dissolve on the edges
         };
         private Dictionary<Effect, EffectConfig> effect_config = new Dictionary<Effect, EffectConfig> {
             // Emission0 uv (tiling, offset) for respective effect icon, on staff material (poiyomi)
-            {Effect.None, new EffectConfig{ emission_ST = new Vector4(0.5f, 0.5f, 0.72f, -0.2f), material = c => null, trail = c => null, can_sphere = false, dissolve = false }},
+            {Effect.None, new EffectConfig{ EmissionST = new Vector4(0.5f, 0.5f, 0.72f, -0.2f), Material = c => null, Trail = c => null, CanSphere = false, HasDissolve = false }},
             
-            {Effect.Normals, new EffectConfig{ emission_ST = new Vector4(1f, 1f, -0.23f, -0.04f), material = c => c.OverlayNormals, trail = c => c.TrailNormals, can_sphere = true, dissolve = true }},
-            {Effect.Wireframe, new EffectConfig{ emission_ST = new Vector4(1f, 1f, -0.08f, -0.17f), material = c => c.OverlayWireframe, trail = c => c.TrailWireframe, can_sphere = true, dissolve = true }},
-            {Effect.WorldGrid, new EffectConfig{ emission_ST = new Vector4(1f, 1f, 0f, -0.36f), material = c => c.OverlayGrid, trail = c => c.TrailGrid, can_sphere = true, dissolve = false }},
-            {Effect.HUD, new EffectConfig{ emission_ST = new Vector4(1f, 1f, -0.02f, -0.57f), material = c => c.OverlayHUD, trail = c => c.TrailHUD, can_sphere = true, dissolve = false }},
-            {Effect.DebugLighting, new EffectConfig{ emission_ST = new Vector4(1f, 1f, -0.14f, -0.75f), material = c => c.OverlayDebugLighting, trail = c => c.TrailDebugLighting, can_sphere = true, dissolve = false }},
+            {Effect.Normals, new EffectConfig{ EmissionST = new Vector4(1f, 1f, -0.23f, -0.04f), Material = c => c.OverlayNormals, Trail = c => c.TrailNormals, CanSphere = true, HasDissolve = true }},
+            {Effect.Wireframe, new EffectConfig{ EmissionST = new Vector4(1f, 1f, -0.08f, -0.17f), Material = c => c.OverlayWireframe, Trail = c => c.TrailWireframe, CanSphere = true, HasDissolve = true }},
+            {Effect.WorldGrid, new EffectConfig{ EmissionST = new Vector4(1f, 1f, 0f, -0.36f), Material = c => c.OverlayGrid, Trail = c => c.TrailGrid, CanSphere = true, HasDissolve = false }},
+            {Effect.HUD, new EffectConfig{ EmissionST = new Vector4(1f, 1f, -0.02f, -0.57f), Material = c => c.OverlayHUD, Trail = c => c.TrailHUD, CanSphere = true, HasDissolve = false }},
+            {Effect.DebugLighting, new EffectConfig{ EmissionST = new Vector4(1f, 1f, -0.14f, -0.75f), Material = c => c.OverlayDebugLighting, Trail = c => c.TrailDebugLighting, CanSphere = true, HasDissolve = false }},
 
             //{Effect.Card, new Vector4(1f, 1f, 0.35f, -0.04f)},
         };
         private struct TargetConfig
         {
-            public Vector3 surface_scale;
-            public Vector4 dissolve; // For overlays with border dissolve support, steady state config
+            public Vector3 SurfaceScale;
+            public Vector4 Dissolve; // For overlays with border dissolve support, steady state config : (radius, border width, scale, time scale)
+            readonly public float DissolvedRadius => Dissolve.y > 0 ? 0f : 1f - Dissolve.y;
         };
         private Dictionary<Target, TargetConfig> target_config = new Dictionary<Target, TargetConfig>{
-            { Target.Window, new TargetConfig { surface_scale = new Vector3(0.001f, 1f, 1f), dissolve = new Vector4(1f, 0.2f, 1f, 0.1f) } },
-            { Target.Hand, new TargetConfig { surface_scale = Vector3.one * 0.8f, dissolve = new Vector4(0.8f, 0.2f, 0.8f, 0.1f) } },
-            { Target.Staff, new TargetConfig { surface_scale = Vector3.one * 12f, dissolve = new Vector4(0.8f, 0.2f, 2f, 0.1f) } },
-            { Target.Raycast, new TargetConfig { surface_scale = Vector3.one * 12f, dissolve = new Vector4(0.8f, 0.2f, 2f, 0.1f) } },
+            { Target.Window, new TargetConfig { SurfaceScale = new Vector3(0.001f, 1f, 1f), Dissolve = new Vector4(0f, -0.2f, 1f, -0.1f) } },
+            { Target.Hand, new TargetConfig { SurfaceScale = Vector3.one * 0.8f, Dissolve = new Vector4(0.8f, 0.2f, 0.8f, 0.1f) } },
+            { Target.Staff, new TargetConfig { SurfaceScale = Vector3.one * 12f, Dissolve = new Vector4(0.8f, 0.2f, 2f, 0.1f) } },
+            { Target.Raycast, new TargetConfig { SurfaceScale = Vector3.one * 12f, Dissolve = new Vector4(0.8f, 0.2f, 2f, 0.1f) } },
         };
         private Target[] supported_targets_for_effect(Effect e) {
-            if(effect_config[e].can_sphere) return (Target[]) System.Enum.GetValues(typeof(Target));
+            if(effect_config[e].CanSphere) return (Target[]) System.Enum.GetValues(typeof(Target));
             else return new Target[] { Target.Window };
         }
         private Color emissive_cyan = new Color(0f, 1.3f, 1.4f, 1f);
@@ -124,7 +125,7 @@ namespace Lereldarion {
                 installer.installTargetMenu = config.MenuTarget;
                 return ma.EditMenuItem(menu);
             }
-            var ctrl = aac.NewAnimatorController();
+            var animator_controller = aac.NewAnimatorController();
 
             int position_enum_count = System.Enum.GetValues(typeof(Position)).Length;
             int effect_enum_count = System.Enum.GetValues(typeof(Effect)).Length;
@@ -132,7 +133,7 @@ namespace Lereldarion {
             Debug.Assert(position_enum_count * effect_enum_count * target_enum_count <= 255);
             int state_int(Position p, Effect e, Target t) => ((int) p * effect_enum_count + (int) e) * target_enum_count + (int) t;
             
-            AacFlLayer layer = ctrl.NewLayer("Staff");
+            AacFlLayer layer = animator_controller.NewLayer("Staff");
             AacFlIntParameter synced = layer.IntParameter("Staff/Synced");
             ma.NewParameter(synced).WithDefaultValue(state_int(Position.Storage, Effect.None, Target.Window));
 
@@ -167,7 +168,7 @@ namespace Lereldarion {
             // Define steady states, and keep references in a table for adding transitions later
             var steady_states = new Dictionary<(Position, Effect, Target), AacFlState>();
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
-                EffectConfig econfig = effect_config[e];
+                EffectConfig e_config = effect_config[e];
                 foreach(Position p in System.Enum.GetValues(typeof(Position))) {
                     foreach(Target t in supported_targets_for_effect(e)) {                        
                         AacFlState state = layer.NewState($"{p}@{e}@{t}");
@@ -189,21 +190,21 @@ namespace Lereldarion {
                         // Effect
                         clip.TogglingComponent(config.Surface, e != Effect.None);
                         if(e != Effect.None) {
-                            clip.SwappingMaterial(config.Surface, 0, econfig.material(config));
+                            clip.SwappingMaterial(config.Surface, 0, e_config.Material(config));
                         }
-                        clip.Animating(SetVector4(config.Staff, "material._EmissionMask_Staff_ST", econfig.emission_ST));
+                        clip.Animating(SetVector4(config.Staff, "material._EmissionMask_Staff_ST", e_config.EmissionST));
 
                         // Target
-                        TargetConfig tconfig = target_config[t];
-                        clip.Scaling(config.Surface.transform, tconfig.surface_scale);
+                        TargetConfig t_config = target_config[t];
+                        clip.Scaling(config.Surface.transform, t_config.SurfaceScale);
                         clip.Animating(SetConstraintActiveSource(surface_parent_constraint, (int) t)); // Constraint set to the right order
                         clip.Animating(SetConstraintWorldFixed(raycaster_parent_constraint, t == Target.Raycast));
                         clip.Animating(edit => {
                             edit.AnimatesColor(config.Staff, "material._EmissionColor_Staff").WithOneFrame(t == Target.Raycast ? emissive_red : emissive_cyan);
                             edit.Animates(config.Staff, "material._EmissionStrength1_Staff").WithOneFrame(t == Target.Staff ? 1f : 0f);
                         });
-                        if(econfig.dissolve) {
-                            clip.Animating(SetVector4(config.Surface, "material._Overlay_Border_Dissolve_Config", tconfig.dissolve));
+                        if(e_config.HasDissolve) {
+                            clip.Animating(SetVector4(config.Surface, "material._Overlay_Border_Dissolve_Config", t_config.Dissolve));
                         }
                     }
                 }
@@ -229,6 +230,7 @@ namespace Lereldarion {
             // Position transitions
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
                 foreach(Target t in supported_targets_for_effect(e)) {
+                    TargetConfig t_config = target_config[t];
                     AacFlState storage = steady_states[(Position.Storage, e, t)];
                     AacFlState one_handed = steady_states[(Position.OneHanded, e, t)];
                     AacFlState two_handed = steady_states[(Position.TwoHanded, e, t)];
@@ -244,16 +246,26 @@ namespace Lereldarion {
                         clip.Animating(SetConstraintActiveSource(staff_parent_constraint, 1));
                         clip.Animating(SetConstraintActiveSource(staff_scale_constraint, 1));
                         clip.Animating(SetConstraintWorldFixed(staff_parent_constraint, false));
-                        // Dissolve
-                        clip.Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(curve => curve.Linear(0f, 1f).Linear(0.5f, 0f)));
-                        clip.TogglingComponent(config.Surface, false); // Temporary disable surface
+                        // Un-Dissolve
+                        clip.Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(keys => keys.Linear(0f, 1f).Linear(0.5f, 0f)));
+                        if (effect_config[e].HasDissolve) {
+                            clip.Animating(edit => edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.x").WithSecondsUnit(keys => {
+                                keys.Linear(0f, t_config.DissolvedRadius);
+                                keys.Linear(0.5f, t_config.DissolvedRadius); // End of staff un-dissolve
+                                keys.Linear(1f, t_config.Dissolve.x);
+                            }));
+                            // yzw already set from steady state, and target does not change
+                        } else {
+                            clip.TogglingComponent(config.Surface, false); // Temporary disable surface
+                        }
                     }
 
+                    // TODO dissolve
                     AacFlState store = layer.NewState($"Store@{e}@{t}"); // Store from any position.
                     store.Drives(synced, state_int(Position.Storage, e, t)).DrivingLocally(); // Early sync
                     store.WithAnimation(aac.NewClip()
                         // Dissolve only, followed by instant Storage. Do not relocate, so we can reuse the previous constraint state
-                        .Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(curve => curve.Linear(0f, 0f).Linear(0.5f, 1f)))
+                        .Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(keys => keys.Linear(0f, 0f).Linear(0.5f, 1f)))
                         .Toggling(config.StaffContacts, false) // Early contact disable
                         .TogglingComponent(config.Surface, false) // Temporary disable surface
                     );
@@ -306,7 +318,7 @@ namespace Lereldarion {
 
                 foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
                     foreach(Target t in supported_targets_for_effect(e)) {
-                        AacFlState e_state = steady_states[(p, e, t)];
+                        TargetConfig t_config = target_config[t];
                         foreach(Effect d in System.Enum.GetValues(typeof(Effect))) {
                             // From e to d
                             if(d == e) continue; // Ignore self transition
@@ -314,35 +326,62 @@ namespace Lereldarion {
                             // Fallback to window if sphere mode is not available.
                             // This is also how we can come back from raycast mode ; just select a non-raycast effect, of which we have at least "None".
                             EffectConfig d_config = effect_config[d];
-                            Target d_target = d_config.can_sphere ? t : Target.Window;
+                            Target d_target = d_config.CanSphere ? t : Target.Window;
                             AacFlState d_state = steady_states[(p, d, d_target)];
                             int d_state_int = state_int(p, d, d_target);
 
                             // Add intermediate transition state for dissolve effects
-                            if (e == Effect.None && d_config.dissolve)
+                            if (e == Effect.None && d_config.HasDissolve)
                             {
-                                // Radial dissolve from None to any. Window target only.
+                                // Radial un-dissolve from None to any.
+                                Debug.Assert(t == Target.Window);
                                 AacFlState deploy = layer.NewState($"{p}@{e}->{d}");
                                 AacFlClip clip = aac.NewClip();
                                 deploy.Drives(synced, d_state_int).DrivingLocally(); // Early sync
                                 deploy.WithAnimation(clip);
 
                                 clip.TogglingComponent(config.Surface, true);
-                                clip.SwappingMaterial(config.Surface, 0, d_config.material(config));
-                                clip.Animating(SetVector4(config.Staff, "material._EmissionMask_Staff_ST", d_config.emission_ST));
+                                clip.SwappingMaterial(config.Surface, 0, d_config.Material(config));
+                                clip.Animating(SetVector4(config.Staff, "material._EmissionMask_Staff_ST", d_config.EmissionST));
                                 clip.Animating(edit => {
-                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.x").WithSecondsUnit(keys => keys.Linear(0f, 1.2f).Linear(0.5f, 0f));
-                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.y").WithOneFrame(-0.2f);
-                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.z").WithOneFrame(1f);
-                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.w").WithOneFrame(-0.1f);
+                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.x").WithSecondsUnit(keys => {
+                                        keys.Linear(0f, t_config.DissolvedRadius);
+                                        keys.Linear(0.5f, t_config.Dissolve.x);
+                                    });
+                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.y").WithOneFrame(t_config.Dissolve.y);
+                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.z").WithOneFrame(t_config.Dissolve.z);
+                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.w").WithOneFrame(t_config.Dissolve.w);
                                 });
 
                                 deploy.AutomaticallyMovesTo(d_state);
                                 d_state = deploy;
                             }
-                            // TODO effect to None, for various targets
+                            else if (effect_config[e].HasDissolve && ((!d_config.CanSphere && t != Target.Window) || d == Effect.None))
+                            {
+                                // Radial dissolve.
+                                // Either because we move toward a window-only effect and are not window : dissolve then swap to window
+                                // Or dissolve due to None, even if window
+                                AacFlState dissolve = layer.NewState($"{p}@{e}->{d}@{t}");
+                                AacFlClip clip = aac.NewClip();
+                                dissolve.Drives(synced, d_state_int).DrivingLocally(); // Early sync
+                                dissolve.WithAnimation(clip);
+
+                                clip.Animating(SetVector4(config.Staff, "material._EmissionMask_Staff_ST", d_config.EmissionST));
+                                clip.Animating(edit => {
+                                    // No need to set yzw, they are already set from steady state
+                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.x").WithSecondsUnit(keys => {
+                                        keys.Linear(0f, t_config.Dissolve.x);
+                                        keys.Linear(0.5f, t_config.DissolvedRadius);
+                                    });
+                                    // Let steady state handle renderer swap or disable.
+                                });
+
+                                dissolve.AutomaticallyMovesTo(d_state);
+                                d_state = dissolve;
+                            }
+                            // From window to window : no special case, instant swap
                             
-                            e_state.TransitionsTo(d_state)
+                            steady_states[(p, e, t)].TransitionsTo(d_state)
                             .When(layer.Av3().ItIsLocal()).And(effect_contacts[d].IsTrue())
                             .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(d_state_int));
                         }
@@ -354,7 +393,7 @@ namespace Lereldarion {
             // Ignore storage, and two handed as we need the right hand free.
             var positions_that_can_target_swap = new[]{ Position.OneHanded, Position.World };
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
-                if(!effect_config[e].can_sphere) continue; // Ignore if we are restricted to window mode.
+                if(!effect_config[e].CanSphere) continue; // Ignore if we are restricted to window mode.
 
                 foreach(Position p in positions_that_can_target_swap) {
                     AacFlState window = steady_states[(p, e, Target.Window)];
@@ -406,12 +445,12 @@ namespace Lereldarion {
                         
                         TargetConfig hand = target_config[Target.Hand];
                         TargetConfig raycast = target_config[Target.Raycast];
-                        clip.Animates(config.Surface.transform, "m_LocalScale.x").WithSecondsUnit(keys => keys.Linear(0f, hand.surface_scale.x).Linear(0.3f, raycast.surface_scale.x));
-                        clip.Animates(config.Surface.transform, "m_LocalScale.y").WithSecondsUnit(keys => keys.Linear(0f, hand.surface_scale.y).Linear(0.3f, raycast.surface_scale.y));
-                        clip.Animates(config.Surface.transform, "m_LocalScale.z").WithSecondsUnit(keys => keys.Linear(0f, hand.surface_scale.z).Linear(0.3f, raycast.surface_scale.z));
-                        if(effect_config[e].dissolve) {
+                        clip.Animates(config.Surface.transform, "m_LocalScale.x").WithSecondsUnit(keys => keys.Linear(0f, hand.SurfaceScale.x).Linear(0.3f, raycast.SurfaceScale.x));
+                        clip.Animates(config.Surface.transform, "m_LocalScale.y").WithSecondsUnit(keys => keys.Linear(0f, hand.SurfaceScale.y).Linear(0.3f, raycast.SurfaceScale.y));
+                        clip.Animates(config.Surface.transform, "m_LocalScale.z").WithSecondsUnit(keys => keys.Linear(0f, hand.SurfaceScale.z).Linear(0.3f, raycast.SurfaceScale.z));
+                        if(effect_config[e].HasDissolve) {
                             // Only z is changed between hand to raycast
-                            clip.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.z").WithSecondsUnit(keys => keys.Linear(0f, hand.dissolve.z).Linear(0.3f, raycast.dissolve.z));
+                            clip.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.z").WithSecondsUnit(keys => keys.Linear(0f, hand.Dissolve.z).Linear(0.3f, raycast.Dissolve.z));
                         }
                     }));
 
@@ -437,7 +476,7 @@ namespace Lereldarion {
                 }
             }
 
-            ma.NewMergeAnimator(ctrl.AnimatorController, VRCAvatarDescriptor.AnimLayerType.FX);
+            ma.NewMergeAnimator(animator_controller.AnimatorController, VRCAvatarDescriptor.AnimLayerType.FX);
 
             {
                 // Make surface bounding box square. Important for culling of fake sphere mode.
