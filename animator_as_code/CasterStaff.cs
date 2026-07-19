@@ -11,6 +11,7 @@ using VRC.SDKBase;
 using VRC.SDK3.Dynamics.Constraint.Components;
 using AnimatorAsCode.V1.VRC;
 using System.Collections.Generic;
+using UnityEditorInternal;
 
 [assembly: ExportsPlugin(typeof(Lereldarion.CasterStaffPlugin))]
 
@@ -104,10 +105,10 @@ namespace Lereldarion {
         private Color emissive_red = new Color(1.2f, 0f, 0f, 1f);
 
         private void Generate(BuildContext ctx) {
-            var config = ctx.AvatarRootTransform.GetComponentInChildren<CasterStaff>(true);
+            CasterStaff config = ctx.AvatarRootTransform.GetComponentInChildren<CasterStaff>(true);
             if(config == null) { return; }
 
-            var aac = AacV1.Create(new AacConfiguration {
+            AacFlBase aac = AacV1.Create(new AacConfiguration {
                 SystemName = SystemName,
                 AnimatorRoot = ctx.AvatarRootTransform,
                 DefaultValueRoot = ctx.AvatarRootTransform,
@@ -117,25 +118,19 @@ namespace Lereldarion {
                 DefaultsProvider = new AacDefaultsProvider()
             });
 
-            var ma_object = new GameObject(SystemName) { transform = { parent = ctx.AvatarRootTransform }};
-            var ma = MaAc.Create(ma_object);
+            GameObject ma_object = new GameObject(SystemName) { transform = { parent = ctx.AvatarRootTransform }};
+            MaAc ma = MaAc.Create(ma_object);
             MaacMenuItem new_installed_menu_item() {
                 var menu = new GameObject { transform = { parent = ma_object.transform }};
                 var installer = menu.AddComponent<ModularAvatarMenuInstaller>();
                 installer.installTargetMenu = config.MenuTarget;
                 return ma.EditMenuItem(menu);
             }
-            var animator_controller = aac.NewAnimatorController();
-
-            int position_enum_count = System.Enum.GetValues(typeof(Position)).Length;
-            int effect_enum_count = System.Enum.GetValues(typeof(Effect)).Length;
-            int target_enum_count = System.Enum.GetValues(typeof(Target)).Length;
-            Debug.Assert(position_enum_count * effect_enum_count * target_enum_count <= 255);
-            int state_int(Position p, Effect e, Target t) => ((int) p * effect_enum_count + (int) e) * target_enum_count + (int) t;
+            AacFlController animator_controller = aac.NewAnimatorController();
             
             AacFlLayer layer = animator_controller.NewLayer("Staff");
             AacFlIntParameter synced = layer.IntParameter("Staff/Synced");
-            ma.NewParameter(synced).WithDefaultValue(state_int(Position.Storage, Effect.None, Target.Window));
+            MaacParameter<int> ma_synced = ma.NewParameter(synced);
 
             // Menu deploy. Driven, or used to force to storage (if deployed) or 1-hand (if storage).
             AacFlBoolParameter menu_deploy = layer.BoolParameter("Staff/MenuDeploy");
@@ -165,19 +160,24 @@ namespace Lereldarion {
             // Entry point. Used on animator start/resume.
             var init_state = layer.NewState("Init");
 
-            // Define steady states, and keep references in a table for adding transitions later
+            // Define steady states and their ids. Keep references in a table for adding transitions later.
             var steady_states = new Dictionary<(Position, Effect, Target), AacFlState>();
+            var state_id = new Dictionary<(Position, Effect, Target), int>();
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
                 EffectConfig e_config = effect_config[e];
                 foreach(Position p in System.Enum.GetValues(typeof(Position))) {
                     foreach(Target t in supported_targets_for_effect(e)) {                        
                         AacFlState state = layer.NewState($"{p}@{e}@{t}");
-                        AacFlClip clip = aac.NewClip($"steady_{p}@{e}@{t}");
-                        state.Drives(synced, state_int(p, e, t));
+                        int id = steady_states.Count;
+                        steady_states.Add((p, e, t), state);
+                        state_id.Add((p, e, t), id);
+
+                        state.Drives(synced, id);
                         state.Drives(menu_deploy, p != Position.Storage);
                         state.DrivingLocally();
+
+                        AacFlClip clip = aac.NewClip($"steady_{p}@{e}@{t}");
                         state.WithAnimation(clip);
-                        steady_states.Add((p, e, t), state);
 
                         // Position
                         clip.Toggling(config.StaffContacts, p != Position.Storage);
@@ -210,12 +210,15 @@ namespace Lereldarion {
                 }
             }
 
+            Debug.Assert(steady_states.Count <= 255);
+            ma_synced.WithDefaultValue(state_id[(Position.Storage, Effect.None, Target.Window)]);
+
             // Init
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
                 var default_state_for_effect = steady_states[(Position.Storage, e, Target.Window)];
                 foreach(Position p in System.Enum.GetValues(typeof(Position))) {
                     foreach(Target t in supported_targets_for_effect(e)) {
-                        int synced_value = state_int(p, e, t);
+                        int synced_value = state_id[(p, e, t)];
 
                         // Remote : load avatar, or enter culling range. Go to synced state.
                         // TODO this will not handle world drops well (Position.World / Target.Raycast). What to do in this case ?
@@ -237,7 +240,7 @@ namespace Lereldarion {
                     AacFlState world = steady_states[(Position.World, e, t)];
 
                     AacFlState storage_to_hand = layer.NewState($"Deploy@{e}@{t}");
-                    storage_to_hand.Drives(synced, state_int(Position.OneHanded, e, t)).DrivingLocally(); // Early sync
+                    storage_to_hand.Drives(synced, state_id[(Position.OneHanded, e, t)]).DrivingLocally(); // Early sync
                     {
                         AacFlClip clip = aac.NewClip();
                         storage_to_hand.WithAnimation(clip);
@@ -262,7 +265,7 @@ namespace Lereldarion {
 
                     // TODO dissolve
                     AacFlState store = layer.NewState($"Store@{e}@{t}"); // Store from any position.
-                    store.Drives(synced, state_int(Position.Storage, e, t)).DrivingLocally(); // Early sync
+                    store.Drives(synced, state_id[(Position.Storage, e, t)]).DrivingLocally(); // Early sync
                     store.WithAnimation(aac.NewClip()
                         // Dissolve only, followed by instant Storage. Do not relocate, so we can reuse the previous constraint state
                         .Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(keys => keys.Linear(0f, 0f).Linear(0.5f, 1f)))
@@ -274,40 +277,40 @@ namespace Lereldarion {
                     storage.TransitionsTo(storage_to_hand)
                     .When(layer.Av3().ItIsLocal()).And(staff_storage_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.Fist))
                     .Or().When(layer.Av3().ItIsLocal()).And(menu_deploy.IsTrue())
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.OneHanded, e, t)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.OneHanded, e, t)]));
 
                     storage_to_hand.AutomaticallyMovesTo(one_handed);
 
                     one_handed.TransitionsTo(store)
                     .When(layer.Av3().ItIsLocal()).And(staff_storage_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.HandOpen))
                     .Or().When(layer.Av3().ItIsLocal()).And(menu_deploy.IsFalse())
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.Storage, e, t)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.Storage, e, t)]));
 
                     // Two hands
                     one_handed.TransitionsTo(two_handed)
                     .When(layer.Av3().ItIsLocal()).And(staff_shaft_right_hand_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fist))
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.TwoHanded, e, t)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.TwoHanded, e, t)]));
 
                     two_handed.TransitionsTo(one_handed)
                     .When(layer.Av3().ItIsLocal()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.HandOpen))
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.OneHanded, e, t)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.OneHanded, e, t)]));
 
                     two_handed.TransitionsTo(store)
                     .When(layer.Av3().ItIsLocal()).And(menu_deploy.IsFalse())
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.Storage, e, t)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.Storage, e, t)]));
 
                     // World drop
                     one_handed.TransitionsTo(world)
                     .When(layer.Av3().ItIsLocal()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.HandOpen))
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.World, e, t)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.World, e, t)]));
                     
                     world.TransitionsTo(one_handed)
                     .When(layer.Av3().ItIsLocal()).And(staff_shaft_left_hand_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.Fist))
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsNotEqualTo(state_int(Position.OneHanded, e, t)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsNotEqualTo(state_id[(Position.OneHanded, e, t)]));
                     
                     world.TransitionsTo(store)
                     .When(layer.Av3().ItIsLocal()).And(menu_deploy.IsFalse())
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.Storage, e, t)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.Storage, e, t)]));
                 }
             }
 
@@ -328,7 +331,7 @@ namespace Lereldarion {
                             EffectConfig d_config = effect_config[d];
                             Target d_target = d_config.CanSphere ? t : Target.Window;
                             AacFlState d_state = steady_states[(p, d, d_target)];
-                            int d_state_int = state_int(p, d, d_target);
+                            int d_state_id = state_id[(p, d, d_target)];
 
                             // Add intermediate transition state for dissolve effects
                             if (e == Effect.None && d_config.HasDissolve)
@@ -337,7 +340,7 @@ namespace Lereldarion {
                                 Debug.Assert(t == Target.Window);
                                 AacFlState deploy = layer.NewState($"{p}@{e}->{d}");
                                 AacFlClip clip = aac.NewClip();
-                                deploy.Drives(synced, d_state_int).DrivingLocally(); // Early sync
+                                deploy.Drives(synced, d_state_id).DrivingLocally(); // Early sync
                                 deploy.WithAnimation(clip);
 
                                 clip.TogglingComponent(config.Surface, true);
@@ -363,7 +366,7 @@ namespace Lereldarion {
                                 // Or dissolve due to None, even if window
                                 AacFlState dissolve = layer.NewState($"{p}@{e}->{d}@{t}");
                                 AacFlClip clip = aac.NewClip();
-                                dissolve.Drives(synced, d_state_int).DrivingLocally(); // Early sync
+                                dissolve.Drives(synced, d_state_id).DrivingLocally(); // Early sync
                                 dissolve.WithAnimation(clip);
 
                                 clip.Animating(SetVector4(config.Staff, "material._EmissionMask_Staff_ST", d_config.EmissionST));
@@ -383,7 +386,7 @@ namespace Lereldarion {
                             
                             steady_states[(p, e, t)].TransitionsTo(d_state)
                             .When(layer.Av3().ItIsLocal()).And(effect_contacts[d].IsTrue())
-                            .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(d_state_int));
+                            .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(d_state_id));
                         }
                     }
                 }
@@ -403,22 +406,22 @@ namespace Lereldarion {
 
                     window.TransitionsTo(hand).WithTransitionDurationSeconds(0.1f)
                     .When(layer.Av3().ItIsLocal()).And(main_ring_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fist))
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(p, e, Target.Hand)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(p, e, Target.Hand)]));
 
                     hand.TransitionsTo(window).WithTransitionDurationSeconds(0.1f)
                     .When(layer.Av3().ItIsLocal()).And(main_ring_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.HandOpen))
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(p, e, Target.Window)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(p, e, Target.Window)]));
 
                     hand.TransitionsTo(staff).WithTransitionDurationSeconds(0.3f)
                     .When(layer.Av3().ItIsLocal()).And(aoe_ring_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.HandOpen))
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(p, e, Target.Staff)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(p, e, Target.Staff)]));
 
                     staff.TransitionsTo(hand).WithTransitionDurationSeconds(0.3f)
                     .When(layer.Av3().ItIsLocal()).And(aoe_ring_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fist))
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(p, e, Target.Hand)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(p, e, Target.Hand)]));
 
                     AacFlState raycasting = layer.NewState($"{p}@{e}@Raycasting");
-                    raycasting.Drives(synced, state_int(p, e, Target.Raycast)).DrivingLocally(); // Early sync
+                    raycasting.Drives(synced, state_id[(p, e, Target.Raycast)]).DrivingLocally(); // Early sync
                     {
                         AacFlClip clip = aac.NewClip();
                         raycasting.WithAnimation(clip);
@@ -456,7 +459,7 @@ namespace Lereldarion {
 
                     hand.TransitionsTo(raycasting)
                     .When(layer.Av3().ItIsLocal()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fingerpoint))
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(p, e, Target.Raycast)));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(p, e, Target.Raycast)]));
 
                     raycasting.TransitionsTo(raycast_deploy).When(raycast_hit.IsTrue());
                     raycasting.AutomaticallyMovesTo(raycast_deploy); // Fallback
@@ -471,7 +474,7 @@ namespace Lereldarion {
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
                 foreach(Position p in System.Enum.GetValues(typeof(Position))) {
                     foreach(Target t in supported_targets_for_effect(e)) {
-                        steady_states[(p, e, t)].TransitionsTo(init_state).When(layer.Av3().ItIsRemote()).And(synced.IsNotEqualTo(state_int(p, e, t)));
+                        steady_states[(p, e, t)].TransitionsTo(init_state).When(layer.Av3().ItIsRemote()).And(synced.IsNotEqualTo(state_id[(p, e, t)]));
                     }
                 }
             }
