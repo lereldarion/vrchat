@@ -23,7 +23,8 @@ namespace Lereldarion {
         public Renderer Staff;
         public Renderer Surface;
         public GameObject StaffContacts;
-        public VRCRaycast Raycast;
+        public VRCRaycast Raycaster;
+        public Transform RaycastAnchor;
 
         [Header("Overlays")]
         public Material OverlayNormals;
@@ -60,6 +61,8 @@ namespace Lereldarion {
             //Card // TODO
         }
 
+        // Target of effect (where the effect mesh is). Overlays use all 4, other effects may not.
+        private enum Target { Window, Hand, Staff, Raycast }
 
         private struct EffectConfig
         {
@@ -81,10 +84,21 @@ namespace Lereldarion {
 
             //{Effect.Card, new Vector4(1f, 1f, 0.35f, -0.04f)},
         };
-
-        // Target of effect (where the effect mesh is). Overlays use all 4, other effects may not.
-        private enum Target { Window, Hand, Staff, Raycast }
-
+        private struct TargetConfig
+        {
+            public Vector3 surface_scale;
+            public Vector4 dissolve; // For overlays with border dissolve support, steady state config
+        };
+        private Dictionary<Target, TargetConfig> target_config = new Dictionary<Target, TargetConfig>{
+            { Target.Window, new TargetConfig { surface_scale = new Vector3(0.001f, 1f, 1f), dissolve = new Vector4(1f, 0.2f, 1f, 0.1f) } },
+            { Target.Hand, new TargetConfig { surface_scale = Vector3.one * 0.8f, dissolve = new Vector4(0.8f, 0.2f, 0.8f, 0.1f) } },
+            { Target.Staff, new TargetConfig { surface_scale = Vector3.one * 12f, dissolve = new Vector4(0.8f, 0.2f, 2f, 0.1f) } },
+            { Target.Raycast, new TargetConfig { surface_scale = Vector3.one * 12f, dissolve = new Vector4(0.8f, 0.2f, 2f, 0.1f) } },
+        };
+        private Target[] supported_targets_for_effect(Effect e) {
+            if(effect_config[e].can_sphere) return (Target[]) System.Enum.GetValues(typeof(Target));
+            else return new Target[] { Target.Window };
+        }
         private Color emissive_cyan = new Color(0f, 1.3f, 1.4f, 1f);
         private Color emissive_red = new Color(1.2f, 0f, 0f, 1f);
 
@@ -127,10 +141,13 @@ namespace Lereldarion {
             ma.NewParameter(menu_deploy).WithDefaultValue(false).NotSaved().NotSynced();
             new_installed_menu_item().Name("Deploy Staff").Toggle(menu_deploy);
 
-            // Contacts
+            // Inputs : Contacts and raycast info
             AacFlBoolParameter staff_storage_contact = layer.BoolParameter("Staff/StorageContact");
             AacFlBoolParameter staff_shaft_left_hand_contact = layer.BoolParameter("Staff/ShaftLeftHandContact");
             AacFlBoolParameter staff_shaft_right_hand_contact = layer.BoolParameter("Staff/ShaftRightHandContact");
+            AacFlBoolParameter main_ring_contact = layer.BoolParameter("Staff/MainRingContact");
+            AacFlBoolParameter aoe_ring_contact = layer.BoolParameter("Staff/AoeRingContact");
+            AacFlBoolParameter raycast_hit = layer.BoolParameter("Staff/Raycast_Hit");
 
             var effect_contacts = new Dictionary<Effect, AacFlBoolParameter>();
             foreach (Effect e in System.Enum.GetValues(typeof(Effect))) {
@@ -142,26 +159,16 @@ namespace Lereldarion {
             var staff_scale_constraint = config.StaffContainer.GetComponent<VRCScaleConstraint>();
             var staff_aim_constraint = config.StaffContainer.GetComponent<VRCAimConstraint>();
             var surface_parent_constraint = config.Surface.GetComponent<VRCParentConstraint>();
-
-            var surface_scale_by_target = new Dictionary<Target, Vector3>{
-                { Target.Window, new Vector3(0.001f, 1f, 1f) },
-                { Target.Hand, Vector3.one * 0.8f },
-                { Target.Staff, Vector3.one * 25f },
-                { Target.Raycast, Vector3.one * 25f },
-            };
-            Target[] supported_targets_for_effect(Effect e) {
-                if(effect_config[e].can_sphere) return (Target[]) System.Enum.GetValues(typeof(Target));
-                else return new Target[] { Target.Window };
-            }
+            var raycaster_parent_constraint = config.Raycaster.GetComponent<VRCParentConstraint>();
 
             // Entry point. Used on animator start/resume.
             var init_state = layer.NewState("Init");
 
             // Define steady states, and keep references in a table for adding transitions later
             var steady_states = new Dictionary<(Position, Effect, Target), AacFlState>();
-            foreach(Position p in System.Enum.GetValues(typeof(Position))) {
-                foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
-                    EffectConfig econfig = effect_config[e];
+            foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
+                EffectConfig econfig = effect_config[e];
+                foreach(Position p in System.Enum.GetValues(typeof(Position))) {
                     foreach(Target t in supported_targets_for_effect(e)) {                        
                         AacFlState state = layer.NewState($"{p}@{e}@{t}");
                         AacFlClip clip = aac.NewClip($"steady_{p}@{e}@{t}");
@@ -180,15 +187,24 @@ namespace Lereldarion {
                         clip.Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithOneFrame(0f)); // Only used during deploy/store animations
 
                         // Effect
-                        clip.Toggling(config.Surface.gameObject, e != Effect.None);
+                        clip.TogglingComponent(config.Surface, e != Effect.None);
                         if(e != Effect.None) {
                             clip.SwappingMaterial(config.Surface, 0, econfig.material(config));
                         }
+                        clip.Animating(SetVector4(config.Staff, "material._EmissionMask_Staff_ST", econfig.emission_ST));
 
                         // Target
-                        clip.Scaling(config.Surface.transform, surface_scale_by_target[t]);
-                        clip.TogglingComponent(config.Raycast, t != Target.Raycast);
+                        TargetConfig tconfig = target_config[t];
+                        clip.Scaling(config.Surface.transform, tconfig.surface_scale);
                         clip.Animating(SetConstraintActiveSource(surface_parent_constraint, (int) t)); // Constraint set to the right order
+                        clip.Animating(SetConstraintWorldFixed(raycaster_parent_constraint, t == Target.Raycast));
+                        clip.Animating(edit => {
+                            edit.AnimatesColor(config.Staff, "material._EmissionColor_Staff").WithOneFrame(t == Target.Raycast ? emissive_red : emissive_cyan);
+                            edit.Animates(config.Staff, "material._EmissionStrength1_Staff").WithOneFrame(t == Target.Staff ? 1f : 0f);
+                        });
+                        if(econfig.dissolve) {
+                            clip.Animating(SetVector4(config.Surface, "material._Overlay_Border_Dissolve_Config", tconfig.dissolve));
+                        }
                     }
                 }
             }
@@ -213,24 +229,25 @@ namespace Lereldarion {
             // Position transitions
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
                 foreach(Target t in supported_targets_for_effect(e)) {
-                    var storage = steady_states[(Position.Storage, e, t)];
-                    var one_handed = steady_states[(Position.OneHanded, e, t)];
-                    var two_handed = steady_states[(Position.TwoHanded, e, t)];
-                    var world = steady_states[(Position.TwoHanded, e, t)];
+                    AacFlState storage = steady_states[(Position.Storage, e, t)];
+                    AacFlState one_handed = steady_states[(Position.OneHanded, e, t)];
+                    AacFlState two_handed = steady_states[(Position.TwoHanded, e, t)];
+                    AacFlState world = steady_states[(Position.World, e, t)];
 
-                    AacFlState deploy = layer.NewState($"Deploy@{e}@{t}");
-                    deploy.Drives(synced, state_int(Position.OneHanded, e, t)).DrivingLocally(); // Early sync
-                    deploy.WithAnimation(aac.NewClip()
+                    AacFlState storage_to_hand = layer.NewState($"Deploy@{e}@{t}");
+                    storage_to_hand.Drives(synced, state_int(Position.OneHanded, e, t)).DrivingLocally(); // Early sync
+                    {
+                        AacFlClip clip = aac.NewClip();
+                        storage_to_hand.WithAnimation(clip);
                         // Immediate 1-hand
-                        .TogglingComponent(staff_aim_constraint, false)
-                        .Animating(SetConstraintActiveSource(staff_parent_constraint, 1))
-                        .Animating(SetConstraintActiveSource(staff_scale_constraint, 1))
-                        .Animating(SetConstraintWorldFixed(staff_parent_constraint, false))
+                        clip.TogglingComponent(staff_aim_constraint, false);
+                        clip.Animating(SetConstraintActiveSource(staff_parent_constraint, 1));
+                        clip.Animating(SetConstraintActiveSource(staff_scale_constraint, 1));
+                        clip.Animating(SetConstraintWorldFixed(staff_parent_constraint, false));
                         // Dissolve
-                        .Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(curve => curve.Linear(0f, 1f).Linear(0.5f, 0f)))
-                        .Toggling(config.Surface.gameObject, false) // Temporary disable surface
-                    );
-                    deploy.AutomaticallyMovesTo(one_handed);
+                        clip.Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(curve => curve.Linear(0f, 1f).Linear(0.5f, 0f)));
+                        clip.TogglingComponent(config.Surface, false); // Temporary disable surface
+                    }
 
                     AacFlState store = layer.NewState($"Store@{e}@{t}"); // Store from any position.
                     store.Drives(synced, state_int(Position.Storage, e, t)).DrivingLocally(); // Early sync
@@ -238,38 +255,174 @@ namespace Lereldarion {
                         // Dissolve only, followed by instant Storage. Do not relocate, so we can reuse the previous constraint state
                         .Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(curve => curve.Linear(0f, 0f).Linear(0.5f, 1f)))
                         .Toggling(config.StaffContacts, false) // Early contact disable
-                        .Toggling(config.Surface.gameObject, false) // Temporary disable surface
+                        .TogglingComponent(config.Surface, false) // Temporary disable surface
                     );
                     store.AutomaticallyMovesTo(storage);
 
-                    storage.TransitionsTo(deploy).When(layer.Av3().ItIsLocal()).And(staff_storage_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.Fist));
-                    one_handed.TransitionsTo(store).When(layer.Av3().ItIsLocal()).And(staff_storage_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.HandOpen));
+                    storage.TransitionsTo(storage_to_hand)
+                    .When(layer.Av3().ItIsLocal()).And(staff_storage_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.Fist))
+                    .Or().When(layer.Av3().ItIsLocal()).And(menu_deploy.IsTrue())
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.OneHanded, e, t)));
 
-                    storage.TransitionsTo(deploy).When(layer.Av3().ItIsLocal()).And(menu_deploy.IsTrue());
-                    one_handed.TransitionsTo(store).When(layer.Av3().ItIsLocal()).And(menu_deploy.IsFalse());
+                    storage_to_hand.AutomaticallyMovesTo(one_handed);
 
-                    one_handed.TransitionsTo(store).When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.Storage, e, t)));
-                    storage.TransitionsTo(deploy).When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.OneHanded, e, t)));
+                    one_handed.TransitionsTo(store)
+                    .When(layer.Av3().ItIsLocal()).And(staff_storage_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.HandOpen))
+                    .Or().When(layer.Av3().ItIsLocal()).And(menu_deploy.IsFalse())
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.Storage, e, t)));
 
                     // Two hands
-                    one_handed.TransitionsTo(two_handed).When(layer.Av3().ItIsLocal()).And(staff_shaft_right_hand_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fist));
-                    two_handed.TransitionsTo(one_handed).When(layer.Av3().ItIsLocal()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.HandOpen));
+                    one_handed.TransitionsTo(two_handed)
+                    .When(layer.Av3().ItIsLocal()).And(staff_shaft_right_hand_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fist))
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.TwoHanded, e, t)));
 
-                    two_handed.TransitionsTo(store).When(layer.Av3().ItIsLocal()).And(menu_deploy.IsFalse());
-                    two_handed.TransitionsTo(store).When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.Storage, e, t)));
+                    two_handed.TransitionsTo(one_handed)
+                    .When(layer.Av3().ItIsLocal()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.HandOpen))
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.OneHanded, e, t)));
 
-                    one_handed.TransitionsTo(two_handed).When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.TwoHanded, e, t)));
-                    two_handed.TransitionsTo(one_handed).When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.OneHanded, e, t)));
+                    two_handed.TransitionsTo(store)
+                    .When(layer.Av3().ItIsLocal()).And(menu_deploy.IsFalse())
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.Storage, e, t)));
 
                     // World drop
-                    one_handed.TransitionsTo(world).When(layer.Av3().ItIsLocal()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.HandOpen));
-                    world.TransitionsTo(one_handed).When(layer.Av3().ItIsLocal()).And(staff_shaft_left_hand_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.Fist));
+                    one_handed.TransitionsTo(world)
+                    .When(layer.Av3().ItIsLocal()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.HandOpen))
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.World, e, t)));
                     
-                    world.TransitionsTo(store).When(layer.Av3().ItIsLocal()).And(menu_deploy.IsFalse());
-                    world.TransitionsTo(store).When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.Storage, e, t)));
+                    world.TransitionsTo(one_handed)
+                    .When(layer.Av3().ItIsLocal()).And(staff_shaft_left_hand_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.Fist))
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsNotEqualTo(state_int(Position.OneHanded, e, t)));
+                    
+                    world.TransitionsTo(store)
+                    .When(layer.Av3().ItIsLocal()).And(menu_deploy.IsFalse())
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.Storage, e, t)));
+                }
+            }
 
-                    one_handed.TransitionsTo(world).When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(Position.World, e, t)));
-                    world.TransitionsTo(one_handed).When(layer.Av3().ItIsRemote()).And(synced.IsNotEqualTo(state_int(Position.OneHanded, e, t)));
+            // Effect swap, from effect e to another
+            foreach(Position p in System.Enum.GetValues(typeof(Position))) {
+                if(p == Position.Storage) continue; // Ignore ; Contacts are not available anyway.
+                // Two handed can only trigger swaps if another player uses the contacts
+
+                foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
+                    foreach(Target t in supported_targets_for_effect(e)) {
+                        AacFlState e_state = steady_states[(p, e, t)];
+                        foreach(Effect d in System.Enum.GetValues(typeof(Effect))) {
+                            // From e to d
+                            if(d == e) continue; // Ignore self transition
+                            
+                            // Fallback to window if sphere mode is not available.
+                            // This is also how we can come back from raycast mode ; just select a non-raycast effect, of which we have at least "None".
+                            EffectConfig d_config = effect_config[d];
+                            Target d_target = d_config.can_sphere ? t : Target.Window;
+                            AacFlState d_state = steady_states[(p, d, d_target)];
+                            int d_state_int = state_int(p, d, d_target);
+
+                            // Add intermediate transition state for dissolve effects
+                            if (e == Effect.None && d_config.dissolve)
+                            {
+                                // Radial dissolve from None to any. Window target only.
+                                AacFlState deploy = layer.NewState($"{p}@{e}->{d}");
+                                AacFlClip clip = aac.NewClip();
+                                deploy.Drives(synced, d_state_int).DrivingLocally(); // Early sync
+                                deploy.WithAnimation(clip);
+
+                                clip.TogglingComponent(config.Surface, true);
+                                clip.SwappingMaterial(config.Surface, 0, d_config.material(config));
+                                clip.Animating(SetVector4(config.Staff, "material._EmissionMask_Staff_ST", d_config.emission_ST));
+                                clip.Animating(edit => {
+                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.x").WithSecondsUnit(keys => keys.Linear(0f, 1.2f).Linear(0.5f, 0f));
+                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.y").WithOneFrame(-0.2f);
+                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.z").WithOneFrame(1f);
+                                    edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.w").WithOneFrame(-0.1f);
+                                });
+
+                                deploy.AutomaticallyMovesTo(d_state);
+                                d_state = deploy;
+                            }
+                            // TODO effect to None, for various targets
+                            
+                            e_state.TransitionsTo(d_state)
+                            .When(layer.Av3().ItIsLocal()).And(effect_contacts[d].IsTrue())
+                            .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(d_state_int));
+                        }
+                    }
+                }
+            }
+
+            // Target swap
+            // Ignore storage, and two handed as we need the right hand free.
+            var positions_that_can_target_swap = new[]{ Position.OneHanded, Position.World };
+            foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
+                if(!effect_config[e].can_sphere) continue; // Ignore if we are restricted to window mode.
+
+                foreach(Position p in positions_that_can_target_swap) {
+                    AacFlState window = steady_states[(p, e, Target.Window)];
+                    AacFlState hand = steady_states[(p, e, Target.Hand)];
+                    AacFlState staff = steady_states[(p, e, Target.Staff)];
+                    AacFlState raycast = steady_states[(p, e, Target.Raycast)];
+
+                    window.TransitionsTo(hand).WithTransitionDurationSeconds(0.1f)
+                    .When(layer.Av3().ItIsLocal()).And(main_ring_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fist))
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(p, e, Target.Hand)));
+
+                    hand.TransitionsTo(window).WithTransitionDurationSeconds(0.1f)
+                    .When(layer.Av3().ItIsLocal()).And(main_ring_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.HandOpen))
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(p, e, Target.Window)));
+
+                    hand.TransitionsTo(staff).WithTransitionDurationSeconds(0.3f)
+                    .When(layer.Av3().ItIsLocal()).And(aoe_ring_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.HandOpen))
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(p, e, Target.Staff)));
+
+                    staff.TransitionsTo(hand).WithTransitionDurationSeconds(0.3f)
+                    .When(layer.Av3().ItIsLocal()).And(aoe_ring_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fist))
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(p, e, Target.Hand)));
+
+                    AacFlState raycasting = layer.NewState($"{p}@{e}@Raycasting");
+                    raycasting.Drives(synced, state_int(p, e, Target.Raycast)).DrivingLocally(); // Early sync
+                    {
+                        AacFlClip clip = aac.NewClip();
+                        raycasting.WithAnimation(clip);
+
+                        // World drop raycast assembly and start raycast
+                        clip.Animating(SetConstraintWorldFixed(raycaster_parent_constraint, true));
+                        clip.TogglingComponent(config.Raycaster, true);
+                        clip.Animating(edit => {
+                            edit.AnimatesColor(config.Staff, "material._EmissionColor_Staff").WithOneFrame(emissive_red);
+                            // Move raycast distance and anchor in sync, until a hit.
+                            // Anchor is not directly raycasted, as during the animation an object closer than current distance could be hit, teleporting the anchor (bad).
+                            edit.Animates(config.Raycaster, "distance").WithSecondsUnit(keys => keys.Linear(0f, 0.1f).Linear(3f, 100f));
+                            edit.Animates(config.RaycastAnchor, "m_LocalPosition.z").WithSecondsUnit(keys => keys.Linear(0f, 0.1f).Linear(3f, 100f));
+                            // Short transition from hand to raycast anchor
+                            edit.Animates(surface_parent_constraint, $"Sources.source{(int) Target.Hand}.Weight").WithSecondsUnit(keys => keys.Linear(0f, 1f).Linear(0.1f, 0f));
+                            edit.Animates(surface_parent_constraint, $"Sources.source{(int) Target.Raycast}.Weight").WithSecondsUnit(keys => keys.Linear(0f, 0f).Linear(0.1f, 1f));
+                        });
+                    }
+
+                    AacFlState raycast_deploy = layer.NewState($"{p}@{e}@Deploy");
+                    raycast_deploy.Drives(raycast_hit, false); // Ensure reset
+                    raycast_deploy.WithAnimation(aac.NewClip().Animating(clip => {
+                        clip.Animates(config.Raycaster, "m_Enabled").WithOneFrame(0); // Not needed anymore
+                        
+                        TargetConfig hand = target_config[Target.Hand];
+                        TargetConfig raycast = target_config[Target.Raycast];
+                        clip.Animates(config.Surface.transform, "m_LocalScale.x").WithSecondsUnit(keys => keys.Linear(0f, hand.surface_scale.x).Linear(0.3f, raycast.surface_scale.x));
+                        clip.Animates(config.Surface.transform, "m_LocalScale.y").WithSecondsUnit(keys => keys.Linear(0f, hand.surface_scale.y).Linear(0.3f, raycast.surface_scale.y));
+                        clip.Animates(config.Surface.transform, "m_LocalScale.z").WithSecondsUnit(keys => keys.Linear(0f, hand.surface_scale.z).Linear(0.3f, raycast.surface_scale.z));
+                        if(effect_config[e].dissolve) {
+                            // Only z is changed between hand to raycast
+                            clip.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.z").WithSecondsUnit(keys => keys.Linear(0f, hand.dissolve.z).Linear(0.3f, raycast.dissolve.z));
+                        }
+                    }));
+
+                    hand.TransitionsTo(raycasting)
+                    .When(layer.Av3().ItIsLocal()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fingerpoint))
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_int(p, e, Target.Raycast)));
+
+                    raycasting.TransitionsTo(raycast_deploy).When(raycast_hit.IsTrue());
+                    raycasting.AutomaticallyMovesTo(raycast_deploy); // Fallback
+                    raycast_deploy.AutomaticallyMovesTo(raycast);
+                    // No return from raycast here. Use None effect button.
                 }
             }
 
@@ -321,6 +474,14 @@ namespace Lereldarion {
             };
         }
 
+        static private System.Action<AacFlEditClip> SetVector4(Component component, string property, Vector4 v) {
+            return clip => {
+                clip.Animates(component, $"{property}.x").WithOneFrame(v.x);
+                clip.Animates(component, $"{property}.y").WithOneFrame(v.y);
+                clip.Animates(component, $"{property}.z").WithOneFrame(v.z);
+                clip.Animates(component, $"{property}.w").WithOneFrame(v.w);
+            };
+        }
     }
 }
 #endif
