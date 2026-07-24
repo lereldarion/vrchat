@@ -221,8 +221,10 @@ namespace Lereldarion {
                         int synced_value = state_id[(p, e, t)];
 
                         // Remote : load avatar, or enter culling range. Go to synced state.
-                        // TODO this will not handle world drops well (Position.World / Target.Raycast). What to do in this case ?
-                        init_state.TransitionsTo(steady_states[(p, e, t)]).When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(synced_value));
+                        // World drops wil not late sync nicely, so just ignore them.
+                        if(p != Position.World && t != Target.Raycast) {
+                            init_state.TransitionsTo(steady_states[(p, e, t)]).When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(synced_value));
+                        }
 
                         // Local : avatar init. Keep Effect, reset position and target.
                         init_state.TransitionsTo(default_state_for_effect).When(layer.Av3().ItIsLocal()).And(synced.IsEqualTo(synced_value));
@@ -253,15 +255,18 @@ namespace Lereldarion {
                         clip.Animating(SetConstraintWorldFixed(staff_parent_constraint, false));
                         // Un-Dissolve
                         clip.Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithSecondsUnit(keys => keys.Linear(0f, 1f).Linear(0.5f, 0f)));
-                        if (e_config.HasDissolve) {
-                            clip.Animating(edit => edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.x").WithSecondsUnit(keys => {
-                                keys.Linear(0f, t_config.DissolvedRadius);
-                                keys.Linear(0.5f, t_config.DissolvedRadius); // End of staff un-dissolve
-                                keys.Linear(1f, t_config.Dissolve.x);
-                            }));
-                            // yzw already set from steady state, and target does not change
-                        } else {
-                            clip.TogglingComponent(config.Surface, false); // Temporary disable surface
+                        if(t != Target.Raycast) {
+                            // Animate effect, dissolve or not
+                            if (e_config.HasDissolve) {
+                                clip.Animating(edit => edit.Animates(config.Surface, "material._Overlay_Border_Dissolve_Config.x").WithSecondsUnit(keys => {
+                                    keys.Linear(0f, t_config.DissolvedRadius);
+                                    keys.Linear(0.5f, t_config.DissolvedRadius); // End of staff un-dissolve
+                                    keys.Linear(1f, t_config.Dissolve.x);
+                                }));
+                                // yzw already set from steady state, and target does not change
+                            } else {
+                                clip.TogglingComponent(config.Surface, false); // Temporary disable surface
+                            }
                         }
                     }
                     deploy.AutomaticallyMovesTo(one_handed);
@@ -319,7 +324,7 @@ namespace Lereldarion {
                     
                     world.TransitionsTo(one_handed)
                     .When(layer.Av3().ItIsLocal()).And(staff_shaft_left_hand_contact.IsTrue()).And(layer.Av3().GestureLeft.IsEqualTo(AacAv3.Av3Gesture.Fist))
-                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsNotEqualTo(state_id[(Position.OneHanded, e, t)]));
+                    .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.OneHanded, e, t)]));
                     
                     world.TransitionsTo(store)
                     .When(layer.Av3().ItIsLocal()).And(menu_deploy.IsFalse())
