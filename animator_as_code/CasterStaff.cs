@@ -26,6 +26,7 @@ namespace Lereldarion {
         public GameObject StaffContacts;
         public VRCRaycast Raycaster;
         public Transform RaycastAnchor;
+        public TrailRenderer Trail;
 
         [Header("Overlays")]
         public Material OverlayNormals;
@@ -37,8 +38,6 @@ namespace Lereldarion {
         public Material TrailWireframe;
         public Material TrailGrid;
         public Material TrailHUD;
-        public Material TrailDebugLighting;
-
     }
 
     public class CasterStaffPlugin : Plugin<CasterStaffPlugin> {
@@ -81,7 +80,7 @@ namespace Lereldarion {
             {Effect.Wireframe, new EffectConfig{ EmissionST = new Vector4(1f, 1f, -0.08f, -0.17f), Material = c => c.OverlayWireframe, Trail = c => c.TrailWireframe, CanSphere = true, HasDissolve = true }},
             {Effect.WorldGrid, new EffectConfig{ EmissionST = new Vector4(1f, 1f, 0f, -0.36f), Material = c => c.OverlayGrid, Trail = c => c.TrailGrid, CanSphere = true, HasDissolve = false }},
             {Effect.HUD, new EffectConfig{ EmissionST = new Vector4(1f, 1f, -0.02f, -0.57f), Material = c => c.OverlayHUD, Trail = c => c.TrailHUD, CanSphere = true, HasDissolve = false }},
-            {Effect.DebugLighting, new EffectConfig{ EmissionST = new Vector4(1f, 1f, -0.14f, -0.75f), Material = c => c.OverlayDebugLighting, Trail = c => c.TrailDebugLighting, CanSphere = true, HasDissolve = false }},
+            {Effect.DebugLighting, new EffectConfig{ EmissionST = new Vector4(1f, 1f, -0.14f, -0.75f), Material = c => c.OverlayDebugLighting, Trail = c => null, CanSphere = true, HasDissolve = false }},
 
             //{Effect.Card, new Vector4(1f, 1f, 0.35f, -0.04f)},
         };
@@ -97,10 +96,6 @@ namespace Lereldarion {
             { Target.Staff, new TargetConfig { SurfaceScale = Vector3.one * 12f, Dissolve = new Vector4(0.8f, 0.2f, 2f, 0.1f) } },
             { Target.Raycast, new TargetConfig { SurfaceScale = Vector3.one * 12f, Dissolve = new Vector4(0.8f, 0.2f, 2f, 0.1f) } },
         };
-        private Target[] supported_targets_for_effect(Effect e) {
-            if(effect_config[e].CanSphere) return (Target[]) System.Enum.GetValues(typeof(Target));
-            else return new Target[] { Target.Window };
-        }
         private Color emissive_cyan = new Color(0f, 1.3f, 1.4f, 1f);
         private Color emissive_red = new Color(1.2f, 0f, 0f, 1f);
 
@@ -144,6 +139,7 @@ namespace Lereldarion {
             AacFlBoolParameter main_ring_contact = layer.BoolParameter("Staff/MainRingContact");
             AacFlBoolParameter aoe_ring_contact = layer.BoolParameter("Staff/AoeRingContact");
             AacFlBoolParameter raycast_hit = layer.BoolParameter("Staff/Raycast_Hit");
+            AacFlBoolParameter trail_contact = layer.BoolParameter("Staff/TrailContact");
 
             var effect_contacts = new Dictionary<Effect, AacFlBoolParameter>();
             foreach (Effect e in System.Enum.GetValues(typeof(Effect))) {
@@ -166,7 +162,9 @@ namespace Lereldarion {
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
                 EffectConfig e_config = effect_config[e];
                 foreach(Position p in System.Enum.GetValues(typeof(Position))) {
-                    foreach(Target t in supported_targets_for_effect(e)) {                        
+                    foreach(Target t in System.Enum.GetValues(typeof(Target))) {
+                        if(!e_config.CanSphere && t != Target.Window) break; // Other targets require sphere mode capability
+
                         AacFlState state = layer.NewState($"{p}@{e}@{t}");
                         int id = steady_states.Count;
                         steady_states.Add((p, e, t), state);
@@ -217,13 +215,14 @@ namespace Lereldarion {
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
                 var default_state_for_effect = steady_states[(Position.Storage, e, Target.Window)];
                 foreach(Position p in System.Enum.GetValues(typeof(Position))) {
-                    foreach(Target t in supported_targets_for_effect(e)) {
+                    foreach(Target t in System.Enum.GetValues(typeof(Target))) {
+                        if(!steady_states.TryGetValue((p, e, t), out AacFlState steady_state)) continue;
                         int synced_value = state_id[(p, e, t)];
 
                         // Remote : load avatar, or enter culling range. Go to synced state.
                         // World drops wil not late sync nicely, so just ignore them.
                         if(p != Position.World && t != Target.Raycast) {
-                            init_state.TransitionsTo(steady_states[(p, e, t)]).When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(synced_value));
+                            init_state.TransitionsTo(steady_state).When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(synced_value));
                         }
 
                         // Local : avatar init. Keep Effect, reset position and target.
@@ -235,12 +234,12 @@ namespace Lereldarion {
             // Position transitions.
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
                 EffectConfig e_config = effect_config[e];
-                foreach(Target t in supported_targets_for_effect(e)) {
-                    TargetConfig t_config = target_config[t];
-                    AacFlState storage = steady_states[(Position.Storage, e, t)];
+                foreach(Target t in System.Enum.GetValues(typeof(Target))) {
+                    if(!steady_states.TryGetValue((Position.Storage, e, t), out AacFlState storage)) continue;
                     AacFlState one_handed = steady_states[(Position.OneHanded, e, t)];
                     AacFlState two_handed = steady_states[(Position.TwoHanded, e, t)];
                     AacFlState world = steady_states[(Position.World, e, t)];
+                    TargetConfig t_config = target_config[t];
 
                     // OneHanded
                     AacFlState deploy = layer.NewState($"Deploy@{e}@{t}");
@@ -333,13 +332,13 @@ namespace Lereldarion {
             }
 
             // Effect swap, from effect e to another.
-            foreach(Position p in System.Enum.GetValues(typeof(Position))) {
-                if(p == Position.Storage) continue; // Ignore ; Contacts are not available anyway.
-                // Two handed can only trigger swaps if another player uses the contacts
-
+            // Ignored : Storage due to no contacts ; TwoHanded as both hands are taken.
+            foreach(Position p in new[]{ Position.OneHanded, Position.World }) {
                 foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
-                    foreach(Target t in supported_targets_for_effect(e)) {
+                    foreach(Target t in System.Enum.GetValues(typeof(Target))) {
+                        if(!steady_states.TryGetValue((p, e, t), out AacFlState steady_state)) continue;
                         TargetConfig t_config = target_config[t];
+
                         foreach(Effect d in System.Enum.GetValues(typeof(Effect))) {
                             // From e to d
                             if(d == e) continue; // Ignore self transition
@@ -402,7 +401,7 @@ namespace Lereldarion {
                             }
                             // From window to window : no special case, instant swap
                             
-                            steady_states[(p, e, t)].TransitionsTo(d_state)
+                            steady_state.TransitionsTo(d_state)
                             .When(layer.Av3().ItIsLocal()).And(effect_contacts[d].IsTrue())
                             .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(d_state_id));
                         }
@@ -491,8 +490,10 @@ namespace Lereldarion {
             // Always define last to let the nice transitions take priority.
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
                 foreach(Position p in System.Enum.GetValues(typeof(Position))) {
-                    foreach(Target t in supported_targets_for_effect(e)) {
-                        steady_states[(p, e, t)].TransitionsTo(init_state).When(layer.Av3().ItIsRemote()).And(synced.IsNotEqualTo(state_id[(p, e, t)]));
+                    foreach(Target t in System.Enum.GetValues(typeof(Target))) {
+                        if(steady_states.TryGetValue((p, e, t), out AacFlState steady_state)) {
+                            steady_state.TransitionsTo(init_state).When(layer.Av3().ItIsRemote()).And(synced.IsNotEqualTo(state_id[(p, e, t)]));
+                        }
                     }
                 }
             }
