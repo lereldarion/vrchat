@@ -12,6 +12,7 @@ using VRC.SDK3.Dynamics.Constraint.Components;
 using AnimatorAsCode.V1.VRC;
 using System.Collections.Generic;
 using UnityEditorInternal;
+using BestHTTP.SecureProtocol.Org.BouncyCastle.Crypto.Paddings;
 
 [assembly: ExportsPlugin(typeof(Lereldarion.CasterStaffPlugin))]
 
@@ -49,8 +50,8 @@ namespace Lereldarion {
             InPhase(BuildPhase.Generating).Run(DisplayName, Generate);
         }
 
-        // Position of staff
-        private enum Position { Storage, OneHanded, TwoHanded, World }
+        // Position of staff. Trail is equivalent to Storage but with trail active.
+        private enum Position { Storage, OneHanded, TwoHanded, World, Trail }
 
         // Active Effect
         private enum Effect {
@@ -146,12 +147,12 @@ namespace Lereldarion {
                 effect_contacts.Add(e, layer.BoolParameter($"Staff/Effect/{e}Contact"));
             }
 
-            // Staff constraints. Parent + scale : [storage, left hand]
-            var staff_parent_constraint = config.StaffContainer.GetComponent<VRCParentConstraint>();
-            var staff_scale_constraint = config.StaffContainer.GetComponent<VRCScaleConstraint>();
-            var staff_aim_constraint = config.StaffContainer.GetComponent<VRCAimConstraint>();
-            var surface_parent_constraint = config.Surface.GetComponent<VRCParentConstraint>();
-            var raycaster_parent_constraint = config.Raycaster.GetComponent<VRCParentConstraint>();
+            // Constraints
+            var staff_parent_constraint = config.StaffContainer.GetComponent<VRCParentConstraint>(); // [storage, left hand]
+            var staff_scale_constraint = config.StaffContainer.GetComponent<VRCScaleConstraint>(); // [storage, left hand]
+            var staff_aim_constraint = config.StaffContainer.GetComponent<VRCAimConstraint>(); // Toggled on/off
+            var surface_parent_constraint = config.Surface.GetComponent<VRCParentConstraint>(); // 4 targets in order
+            var raycaster_parent_constraint = config.Raycaster.GetComponent<VRCParentConstraint>(); // Locks raycaster to head, toggle world drop
 
             // Entry point. Used on animator start/resume.
             var init_state = layer.NewState("Init");
@@ -161,7 +162,9 @@ namespace Lereldarion {
             var state_id = new Dictionary<(Position, Effect, Target), int>();
             foreach(Effect e in System.Enum.GetValues(typeof(Effect))) {
                 EffectConfig e_config = effect_config[e];
+                Material trail_material = e_config.Trail(config);
                 foreach(Position p in System.Enum.GetValues(typeof(Position))) {
+                    if(trail_material is null && p == Position.Trail) continue; // No trail mode if unsupported by effect
                     foreach(Target t in System.Enum.GetValues(typeof(Target))) {
                         if(!e_config.CanSphere && t != Target.Window) break; // Other targets require sphere mode capability
 
@@ -178,9 +181,10 @@ namespace Lereldarion {
                         state.WithAnimation(clip);
 
                         // Position
-                        clip.Toggling(config.StaffContacts, p != Position.Storage);
-                        clip.Animating(SetConstraintActiveSource(staff_parent_constraint, p == Position.Storage ? 0 : 1));
-                        clip.Animating(SetConstraintActiveSource(staff_scale_constraint, p == Position.Storage ? 0 : 1));
+                        bool is_in_storage = p == Position.Storage || p == Position.Trail;
+                        clip.Toggling(config.StaffContacts, !is_in_storage);
+                        clip.Animating(SetConstraintActiveSource(staff_parent_constraint, is_in_storage ? 0 : 1));
+                        clip.Animating(SetConstraintActiveSource(staff_scale_constraint, is_in_storage ? 0 : 1));
                         clip.Animating(SetConstraintWorldFixed(staff_parent_constraint, p == Position.World));
                         clip.TogglingComponent(staff_aim_constraint, p == Position.TwoHanded);
                         clip.Animating(edit => edit.Animates(config.Staff, "material._DissolveAlpha_Staff").WithOneFrame(0f)); // Only used during deploy/store animations
@@ -191,6 +195,12 @@ namespace Lereldarion {
                             clip.SwappingMaterial(config.Surface, 0, e_config.Material(config));
                         }
                         clip.Animating(SetVector4(config.Staff, "material._EmissionMask_Staff_ST", e_config.EmissionST));
+
+                        // Trail. TODO add secondary layer that toggles off the renderer after timeout + blendtree for avatar scaling. World drop parent constraint too ?
+                        clip.Animating(edit => edit.Animates(config.Trail, "m_Emitting").WithOneFrame(p == Position.Trail ? 1f : 0f));
+                        if(p == Position.Trail) {
+                            clip.SwappingMaterial(config.Trail, 0, trail_material);
+                        }
 
                         // Target
                         TargetConfig t_config = target_config[t];
@@ -328,6 +338,17 @@ namespace Lereldarion {
                     world.TransitionsTo(store)
                     .When(layer.Av3().ItIsLocal()).And(menu_deploy.IsFalse())
                     .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.Storage, e, t)]));
+
+                    // Trail if supported
+                    if(steady_states.TryGetValue((Position.Trail, e, t), out AacFlState trail)) {
+                        storage.TransitionsTo(trail)
+                        .When(layer.Av3().ItIsLocal()).And(trail_contact.IsTrue()).And(layer.Av3().GestureRight.IsEqualTo(AacAv3.Av3Gesture.Fingerpoint))
+                        .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.Trail, e, t)]));
+
+                        trail.TransitionsTo(storage)
+                        .When(layer.Av3().ItIsLocal()).And(layer.Av3().GestureRight.IsNotEqualTo(AacAv3.Av3Gesture.Fingerpoint))
+                        .Or().When(layer.Av3().ItIsRemote()).And(synced.IsEqualTo(state_id[(Position.Storage, e, t)]));
+                    }
                 }
             }
 
