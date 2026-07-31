@@ -196,7 +196,7 @@ namespace Lereldarion {
                         }
                         clip.Animating(SetVector4(config.Staff, "material._EmissionMask_Staff_ST", e_config.EmissionST));
 
-                        // Trail. TODO add secondary layer that toggles off the renderer after timeout + blendtree for avatar scaling. World drop parent constraint too ?
+                        // Trail
                         clip.Animating(edit => edit.Animates(config.Trail, "m_Emitting").WithOneFrame(p == Position.Trail ? 1f : 0f));
                         if(p == Position.Trail) {
                             clip.SwappingMaterial(config.Trail, 0, trail_material);
@@ -515,6 +515,48 @@ namespace Lereldarion {
                         if(steady_states.TryGetValue((p, e, t), out AacFlState steady_state)) {
                             steady_state.TransitionsTo(init_state).When(layer.Av3().ItIsRemote()).And(synced.IsNotEqualTo(state_id[(p, e, t)]));
                         }
+                    }
+                }
+            }
+
+            // Trail auxiliary layers : controls the trail renderer scale, and disable it when unused for long
+            {
+                // TrailRenderer requires manual scaling, ignores object space scaling.
+                AacFlLayer linear_layer = animator_controller.NewLayer("Staff/Scale");
+                AacFlLayer inverse_layer = animator_controller.NewLayer("Staff/ScaleInverse");
+                AacFlBlendTree1D linear_tree = aac.NewBlendTree().Simple1D(linear_layer.Av3().ScaleFactor);
+                AacFlBlendTree1D inverse_tree = aac.NewBlendTree().Simple1D(inverse_layer.Av3().ScaleFactorInverse);
+                linear_layer.NewState("Scale").WithAnimation(linear_tree);
+                inverse_layer.NewState("Scale").WithAnimation(inverse_tree);
+                
+                float trail_width = config.Trail.widthMultiplier; // Assumes width curve is constant 1
+                foreach(float scale in new[]{ 0.1f, 10f })
+                {
+                    AacFlClip linear_clip = aac.NewClip();
+                    linear_clip.Animating(edit => edit.Animates(config.Trail, "m_Parameters.widthMultiplier").WithOneFrame(trail_width * scale));
+                    linear_tree.WithAnimation(linear_clip, scale);
+
+                    // TextureScale.y=1, to have UV.y always cover [0,1] over the width. Setting TextureScale.x = 1/width in Static UV mode keeps the UV square in world space
+                    AacFlClip inverse_clip = aac.NewClip();
+                    inverse_clip.Animating(edit => edit.Animates(config.Trail, "m_Parameters.textureScale.x").WithOneFrame(1f / (trail_width * scale)));
+                    inverse_tree.WithAnimation(inverse_clip, 1f / scale);
+                }
+            }
+            if(false){
+                // TODO toggle off the renderer after timeout. World drop parent constraint too ?
+                AacFlLayer trail_layer = animator_controller.NewLayer("Staff/TrailRenderer");
+                AacFlIntParameter staff_synced = trail_layer.IntParameter("Staff/Synced");
+
+                AacFlState disabled = trail_layer.NewState("Disabled");
+                disabled.WithAnimation(aac.NewClip().TogglingComponent(config.Trail, false));
+
+                AacFlState enabled = trail_layer.NewState("Enabled");                
+
+                foreach(var k_v in state_id) {
+                    if(k_v.Key.Item1 == Position.Trail) {
+                        disabled.TransitionsTo(enabled).When(staff_synced.IsEqualTo(k_v.Value));
+                    } else {
+                        enabled.TransitionsTo(disabled).When(staff_synced.IsEqualTo(k_v.Value));
                     }
                 }
             }
