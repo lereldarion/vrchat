@@ -521,26 +521,23 @@ namespace Lereldarion {
 
             // Trail auxiliary layers : controls the trail renderer scale, and disable it when unused for long
             {
-                // TrailRenderer requires manual scaling, ignores object space scaling.
-                AacFlLayer linear_layer = animator_controller.NewLayer("Staff/Scale");
-                AacFlLayer inverse_layer = animator_controller.NewLayer("Staff/ScaleInverse");
-                AacFlBlendTree1D linear_tree = aac.NewBlendTree().Simple1D(linear_layer.Av3().ScaleFactor);
-                AacFlBlendTree1D inverse_tree = aac.NewBlendTree().Simple1D(inverse_layer.Av3().ScaleFactorInverse);
-                linear_layer.NewState("Scale").WithAnimation(linear_tree);
-                inverse_layer.NewState("Scale").WithAnimation(inverse_tree);
+                // TrailRenderer requires manual scaling, as it ignores object space scaling.
+                // Scale trail width with avatar scale factor, using a 1D tree.
+                AacFlLayer trail_scaling_layer = animator_controller.NewLayer("Staff/Scale");
+                AacFlBlendTree1D tree = aac.NewBlendTree().Simple1D(trail_scaling_layer.Av3().ScaleFactor);
+                trail_scaling_layer.NewState("Scale").WithAnimation(tree);
                 
                 float trail_width = config.Trail.widthMultiplier; // Assumes width curve is constant 1
                 foreach(float scale in new[]{ 0.1f, 10f })
                 {
                     AacFlClip linear_clip = aac.NewClip();
                     linear_clip.Animating(edit => edit.Animates(config.Trail, "m_Parameters.widthMultiplier").WithOneFrame(trail_width * scale));
-                    linear_tree.WithAnimation(linear_clip, scale);
-
-                    // TextureScale.y=1, to have UV.y always cover [0,1] over the width. Setting TextureScale.x = 1/width in Static UV mode keeps the UV square in world space
-                    AacFlClip inverse_clip = aac.NewClip();
-                    inverse_clip.Animating(edit => edit.Animates(config.Trail, "m_Parameters.textureScale.x").WithOneFrame(1f / (trail_width * scale)));
-                    inverse_tree.WithAnimation(inverse_clip, 1f / scale);
+                    tree.WithAnimation(linear_clip, scale);
                 }
+
+                // TextureScale.y=1, to have UV.y always cover [0,1] over the width.
+                // Setting TextureScale.x = 1/width in Static UV mode keeps the UV square in world space.
+                // TextureScale could be adjusted using a 1D tree following ScaleFactorInverse, but sadly TextureScale cannot be animated. TODO Manually fix UVs inside the shader ?
             }
             if(false){
                 // TODO toggle off the renderer after timeout. World drop parent constraint too ?
